@@ -1,5 +1,0 @@
-Both versions convey a topic; it’s pretty easy to predict that the paragraph will be about epidemiological evidence, but only the second version establishes an argumentative point and puts it in context. The paragraph doesn’t just describe the epidemiological evidence; it shows how epidemiology is telling the same story as etiology. Similarly, while Version A doesn’t relate to anything in particular, Version B immediately suggests that the prior paragraph addresses the biological pathway (i.e. etiology) of a disease and that the new paragraph will bolster the emerging hypothesis with a different kind of evidence. As a reader, it’s easy to keep track of how the paragraph about cells and chemicals and such relates to the paragraph about populations in different places.
-
-Woah, do you even write bro?
-
-And when you’re writing, you may also find it useful to write the first sentence of each paragraph (instead of a topic-based outline) to map out a thorough argument before getting immersed in sentence-level wordsmithing.
