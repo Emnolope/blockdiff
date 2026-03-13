@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 from unidiff import PatchSet
 
 @dataclass
@@ -16,14 +16,42 @@ class DiffBlock:
     def word_count(self) -> int:
         return len(self.content.split())
 
-def parse_diff(diff_text: str) -> tuple[List[DiffBlock], List[DiffBlock]]:
+@dataclass
+class RenamedFile:
+    old_path: str
+    new_path: str
+    similarity: int  # 0-100%
+
+def parse_diff(diff_text: str) -> tuple[List[DiffBlock], List[DiffBlock], List[RenamedFile]]:
     """
     Parses unified diff text into lists of added and removed blocks.
     A block is a contiguous run of changed lines within a hunk, separated by empty lines.
+    
+    Also detects renamed files (via similarity index in git diff).
     """
     patch_set = PatchSet(diff_text)
     removed_blocks = []
     added_blocks = []
+    renamed_files = []
+
+    # Track rename mappings from git diff metadata
+    # Git diff outputs: similarity index, rename from, rename to
+    pending_sim = None
+    pending_old = None
+    
+    for line in diff_text.split('\n'):
+        if line.startswith('similarity index '):
+            # "similarity index 82%"
+            parts = line.split()
+            pending_sim = int(parts[2].rstrip('%'))
+        elif line.startswith('rename from '):
+            pending_old = line[12:]  # "rename from path"
+        elif line.startswith('rename to '):
+            new_path = line[10:]  # "rename to path"
+            if pending_sim is not None and pending_old is not None:
+                renamed_files.append(RenamedFile(pending_old, new_path, pending_sim))
+            pending_sim = None
+            pending_old = None
 
     for patched_file in patch_set:
         file_path = patched_file.path
@@ -56,14 +84,12 @@ def parse_diff(diff_text: str) -> tuple[List[DiffBlock], List[DiffBlock]]:
                 added_start = None
 
             for line in hunk:
-                # Unidiff line types: '', '+', '-', '@'
                 text = line.value.rstrip("\r\n")
                 
                 if line.is_removed:
                     if removed_start is None:
                         removed_start = line.source_line_no
                     if not text.strip():
-                        # Blank line separates blocks
                         flush_removed()
                     else:
                         current_removed.append(text)
@@ -75,7 +101,6 @@ def parse_diff(diff_text: str) -> tuple[List[DiffBlock], List[DiffBlock]]:
                     if added_start is None:
                         added_start = line.target_line_no
                     if not text.strip():
-                        # Blank line separates blocks
                         flush_added()
                     else:
                         current_added.append(text)
@@ -86,4 +111,4 @@ def parse_diff(diff_text: str) -> tuple[List[DiffBlock], List[DiffBlock]]:
             flush_removed()
             flush_added()
 
-    return removed_blocks, added_blocks
+    return removed_blocks, added_blocks, renamed_files

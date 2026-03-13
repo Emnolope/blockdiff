@@ -5,14 +5,25 @@ from rich.text import Text
 from rich.panel import Panel
 from rich.markdown import Markdown
 
-from .parse import DiffBlock
+from .parse import DiffBlock, RenamedFile
 from .match import MovedBlock
 
-def render_diff(removed: List[DiffBlock], added: List[DiffBlock], moved: List[MovedBlock]):
+def render_diff(removed: List[DiffBlock], added: List[DiffBlock], moved: List[MovedBlock], renamed: List[RenamedFile] = None):
     """
-    Renders the diff using rich, outputting REMOVED, ADDED, and MOVED blocks.
+    Renders the diff using rich, outputting RENAMED, MOVED, ADDED, and REMOVED blocks.
     """
+    if renamed is None:
+        renamed = []
+        
     console = Console()
+    
+    # Render RENAMED files first
+    if renamed:
+        console.print(Panel("RENAMED FILES", style="cyan bold"))
+        for r in renamed:
+            header = f"RENAMED: {r.old_path} -> {r.new_path} ({r.similarity}%)"
+            console.print(header, style="cyan bold")
+        console.print()
     
     # Render MOVED blocks
     if moved:
@@ -43,11 +54,19 @@ def render_diff(removed: List[DiffBlock], added: List[DiffBlock], moved: List[Mo
             for line in add.raw_lines:
                 console.print(line, style="green")
             console.print()
-def render_json(removed: List[DiffBlock], added: List[DiffBlock], moved: List[MovedBlock]):
+
+def render_json(removed: List[DiffBlock], added: List[DiffBlock], moved: List[MovedBlock], renamed: List[RenamedFile] = None):
     """
     Outputs the diff as JSON.
     """
+    if renamed is None:
+        renamed = []
+        
     res = {
+        "renamed": [
+            {"old_path": r.old_path, "new_path": r.new_path, "similarity": r.similarity}
+            for r in renamed
+        ],
         "removed": [
             {"file": r.file_path, "line_start": r.start_line, "content": r.content}
             for r in removed
@@ -58,6 +77,7 @@ def render_json(removed: List[DiffBlock], added: List[DiffBlock], moved: List[Mo
         ],
         "moved": [],
         "summary": {
+            "renamed_count": len(renamed),
             "removed_count": len(removed),
             "added_count": len(added),
             "moved_count": len(moved)

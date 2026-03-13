@@ -25,16 +25,18 @@ def blockdiff(repo_path: str = ".", ref1: str = "HEAD~1", ref2: str = "HEAD", mi
         if not diff_text.strip():
             return json.dumps({"message": "No differences found.", "removed": [], "added": [], "moved": [], "summary": {}}, indent=2)
 
-        removed, added = parse_diff(diff_text)
+        removed, added, renamed = parse_diff(diff_text)
         rem_out, add_out, moved_out = find_moves(removed, added, min_words=min_words)
         
         # Construct JSON response
         
         res = {
+            "renamed": [{"old_path": r.old_path, "new_path": r.new_path, "similarity": r.similarity} for r in renamed],
             "removed": [{"file": r.file_path, "line_start": r.start_line, "content": r.content} for r in rem_out],
             "added": [{"file": a.file_path, "line_start": a.start_line, "content": a.content} for a in add_out],
             "moved": [],
             "summary": {
+                "renamed_count": len(renamed),
                 "removed_count": len(rem_out),
                 "added_count": len(add_out),
                 "moved_count": len(moved_out)

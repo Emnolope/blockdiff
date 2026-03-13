@@ -38,13 +38,13 @@ def main():
         print("No differences found.")
         return
 
-    removed, added = parse_diff(diff_text)
+    removed, added, renamed = parse_diff(diff_text)
     rem_out, add_out, moved_out = find_moves(removed, added, min_words=20)
     
     if args.json:
-        render_json(rem_out, add_out, moved_out)
+        render_json(rem_out, add_out, moved_out, renamed)
     else:
-        render_diff(rem_out, add_out, moved_out)
+        render_diff(rem_out, add_out, moved_out, renamed)
 
 if __name__ == "__main__":
     main()
