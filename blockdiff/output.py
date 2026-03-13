@@ -7,7 +7,6 @@ from rich.markdown import Markdown
 
 from .parse import DiffBlock
 from .match import MovedBlock
-from redlines import Redlines
 
 def render_diff(removed: List[DiffBlock], added: List[DiffBlock], moved: List[MovedBlock]):
     """
@@ -21,15 +20,8 @@ def render_diff(removed: List[DiffBlock], added: List[DiffBlock], moved: List[Mo
         for m in moved:
             header = f"FROM: {m.source_file}:{m.source_line} -> TO: {m.target_file}:{m.target_line}"
             console.print(header, style="yellow bold")
-            
-            if m.is_exact:
-                for line in m.source_content.split('\n'):
-                    console.print(f"~ {line}", style="yellow")
-            else:
-                # Modified move, use redlines for word-level inline diff
-                rl = Redlines(m.source_content, m.target_content)
-                console.print(Markdown(rl.output_markdown))
-                
+            for line in m.source_content.split('\n'):
+                console.print(f"~ {line}", style="yellow")
             console.print()
 
     # Render REMOVED blocks
@@ -68,26 +60,17 @@ def render_json(removed: List[DiffBlock], added: List[DiffBlock], moved: List[Mo
         "summary": {
             "removed_count": len(removed),
             "added_count": len(added),
-            "moved_count": len(moved),
-            "modified_moves_count": sum(1 for m in moved if not m.is_exact)
+            "moved_count": len(moved)
         }
     }
 
     for m in moved:
-        word_diff = None
-        if not m.is_exact:
-            rl = Redlines(m.source_content, m.target_content)
-            word_diff = rl.output_markdown
-            
         res["moved"].append({
             "from_file": m.source_file,
             "from_line": m.source_line,
             "to_file": m.target_file,
             "to_line": m.target_line,
-            "content": m.target_content,
-            "similarity": m.similarity,
-            "modified": not m.is_exact,
-            "word_diff": word_diff
+            "content": m.target_content
         })
 
     print(json.dumps(res, indent=2))

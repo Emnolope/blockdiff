@@ -4,7 +4,6 @@ import json
 
 from blockdiff.parse import parse_diff
 from blockdiff.match import find_moves
-from blockdiff.output import Redlines
 
 mcp = FastMCP("blockdiff")
 
@@ -27,7 +26,7 @@ def blockdiff(repo_path: str = ".", ref1: str = "HEAD~1", ref2: str = "HEAD", mi
             return json.dumps({"message": "No differences found.", "removed": [], "added": [], "moved": [], "summary": {}}, indent=2)
 
         removed, added = parse_diff(diff_text)
-        rem_out, add_out, moved_out = find_moves(removed, added, min_words=min_words, similarity_threshold=0.8)
+        rem_out, add_out, moved_out = find_moves(removed, added, min_words=min_words)
         
         # Construct JSON response
         
@@ -38,26 +37,17 @@ def blockdiff(repo_path: str = ".", ref1: str = "HEAD~1", ref2: str = "HEAD", mi
             "summary": {
                 "removed_count": len(rem_out),
                 "added_count": len(add_out),
-                "moved_count": len(moved_out),
-                "modified_moves_count": sum(1 for m in moved_out if not m.is_exact)
+                "moved_count": len(moved_out)
             }
         }
 
         for m in moved_out:
-            word_diff = None
-            if not m.is_exact:
-                rl = Redlines(m.source_content, m.target_content)
-                word_diff = rl.output_markdown
-                
             res["moved"].append({
                 "from_file": m.source_file,
                 "from_line": m.source_line,
                 "to_file": m.target_file,
                 "to_line": m.target_line,
-                "content": m.target_content,
-                "similarity": m.similarity,
-                "modified": not m.is_exact,
-                "word_diff": word_diff
+                "content": m.target_content
             })
 
         return json.dumps(res, indent=2)

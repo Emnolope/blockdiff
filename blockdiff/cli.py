@@ -39,7 +39,7 @@ def main():
         return
 
     removed, added = parse_diff(diff_text)
-    rem_out, add_out, moved_out = find_moves(removed, added, min_words=20, similarity_threshold=0.8)
+    rem_out, add_out, moved_out = find_moves(removed, added, min_words=20)
     
     if args.json:
         render_json(rem_out, add_out, moved_out)
