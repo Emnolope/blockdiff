@@ -1,6 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Optional
-import difflib
+from typing import List
 
 from .parse import DiffBlock
 
