@@ -1,0 +1,1 @@
+This is a long paragraph that contains many words to exceed the minimum threshold for block detection. It discusses many things including how blockdiff works.
