@@ -20,7 +20,14 @@ dependencies = [
     "unidiff",
     "redlines",
     "rich",
-    "mcp"
+    "typing_extensions"
+]
+
+[project.optional-dependencies]
+mcp = [
+    "mcp",
+    "fastmcp",
+    "typing_extensions"
 ]
 
 [project.scripts]

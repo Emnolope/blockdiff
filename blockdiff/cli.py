@@ -19,19 +19,19 @@ def main():
     if args.files:
         file1, file2 = args.files
         # Run git diff --no-index file1 file2
-        result = subprocess.run(["git", "diff", "--no-index", file1, file2], capture_output=True, text=True)
+        result = subprocess.run(["git", "diff", "--no-index", file1, file2], capture_output=True, text=True, encoding="utf-8")
         diff_text = result.stdout
     elif args.git_args:
         # Run git diff with args
         cmd = ["git", "diff"] + args.git_args
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
         diff_text = result.stdout
     elif not sys.stdin.isatty():
         # Read from stdin
         diff_text = sys.stdin.read()
     else:
         # Run git diff (no args)
-        result = subprocess.run(["git", "diff"], capture_output=True, text=True)
+        result = subprocess.run(["git", "diff"], capture_output=True, text=True, encoding="utf-8")
         diff_text = result.stdout
 
     if not diff_text.strip():

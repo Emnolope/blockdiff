@@ -15,6 +15,9 @@ A drop-in replacement tool for `git diff` that detects cross-file moved lines.
 
 ```bash
 pip install blockdiff
+
+# Or with MCP support for AI agents:
+pip install "blockdiff[mcp]"
 ```
 
 ## Usage

@@ -1,0 +1,13 @@
+README.md
+pyproject.toml
+blockdiff/__init__.py
+blockdiff/cli.py
+blockdiff/match.py
+blockdiff/output.py
+blockdiff/parse.py
+blockdiff.egg-info/PKG-INFO
+blockdiff.egg-info/SOURCES.txt
+blockdiff.egg-info/dependency_links.txt
+blockdiff.egg-info/entry_points.txt
+blockdiff.egg-info/requires.txt
+blockdiff.egg-info/top_level.txt

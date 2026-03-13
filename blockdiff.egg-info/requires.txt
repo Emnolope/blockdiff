@@ -1,0 +1,8 @@
+unidiff
+redlines
+rich
+
+[mcp]
+mcp
+fastmcp
+typing_extensions
