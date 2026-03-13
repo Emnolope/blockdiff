@@ -1,1 +1,0 @@
-This second paragraph stays in file_a.

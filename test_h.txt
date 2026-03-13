@@ -1,2 +1,0 @@
-This is a long paragraph that contains enough words to exceed the minimum threshold for block detection and should be detected as an exact move when moved from one file to another without any changes at all.
-

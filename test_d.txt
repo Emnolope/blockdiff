@@ -1,2 +1,0 @@
-This is an unchanged paragraph that should be detected as moved exactly.
-
