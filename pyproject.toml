@@ -18,7 +18,6 @@ classifiers = [
 ]
 dependencies = [
     "unidiff",
-    "redlines",
     "rich",
     "typing_extensions"
 ]
