@@ -25,10 +25,10 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = [
-    "mcp",
-    "fastmcp",
+    "mcp[cli]",
     "typing_extensions"
 ]
 
 [project.scripts]
 blockdiff = "blockdiff.cli:main"
+blockdiff-mcp = "blockdiff.mcp_server:run"

@@ -3,7 +3,7 @@
 A drop-in replacement tool for `git diff` that detects cross-file moved lines.
 
 > [!NOTE]
-> This project was vibe coded in an IDE by **Antigravity** (powered by **Gemini 2.0 Flash Thinking**).
+> This project was vibe coded in an IDE by **Antigravity** (powered by **Gemini 3.0 Flash**).
 
 ## The Problem
 `git diff --color-moved` detects moved lines but only within the same file. It cannot detect when a paragraph or code block moves from `file_a.md` to `file_b.md`. Standard `git diff` shows the move as a deletion in A and an insertion in B, which is indistinguishable from actual content loss.
@@ -58,8 +58,7 @@ Add to your MCP config:
 {
   "mcpServers": {
     "blockdiff": {
-      "command": "python",
-      "args": ["/path/to/blockdiff_mcp.py"]
+      "command": "blockdiff-mcp"
     }
   }
 }
