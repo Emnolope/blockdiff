@@ -18,14 +18,12 @@ classifiers = [
 ]
 dependencies = [
     "unidiff",
-    "rich",
-    "typing_extensions"
+    "rich"
 ]
 
 [project.optional-dependencies]
 mcp = [
-    "mcp[cli]",
-    "typing_extensions"
+    "mcp[cli]"
 ]
 
 [project.scripts]
