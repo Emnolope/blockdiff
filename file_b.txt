@@ -1,0 +1,1 @@
+This is a long paragraph that contains enough words to exceed the minimum threshold for block detection. It talks about many things including how blockdiff works and why cross-file moves are important for git users and AI agents alike. We need to make sure this paragraph is at least twenty words long so it does not get ignored as noise.
