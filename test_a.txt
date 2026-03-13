@@ -1,0 +1,3 @@
+This is a long paragraph that contains enough words to exceed the minimum threshold for block detection. It talks about many things including how blockdiff works.
+
+This second paragraph stays in file_a.
