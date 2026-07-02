@@ -4,6 +4,7 @@ from rich.console import Console
 from rich.text import Text
 from rich.panel import Panel
 from rich.markdown import Markdown
+from rich.markup import escape
 
 from .parse import DiffBlock, RenamedFile
 from .match import MovedBlock
@@ -22,7 +23,7 @@ def render_diff(removed: List[DiffBlock], added: List[DiffBlock], moved: List[Mo
         console.print(Panel("RENAMED FILES", style="cyan bold"))
         for r in renamed:
             header = f"RENAMED: {r.old_path} -> {r.new_path} ({r.similarity}%)"
-            console.print(header, style="cyan bold")
+            console.print(escape(header), style="cyan bold")
         console.print()
     
     # Render MOVED blocks
@@ -30,9 +31,9 @@ def render_diff(removed: List[DiffBlock], added: List[DiffBlock], moved: List[Mo
         console.print(Panel("MOVED BLOCKS", style="yellow bold"))
         for m in moved:
             header = f"FROM: {m.source_file}:{m.source_line} -> TO: {m.target_file}:{m.target_line}"
-            console.print(header, style="yellow bold")
+            console.print(escape(header), style="yellow bold")
             for line in m.source_content.split('\n'):
-                console.print(f"~ {line}", style="yellow")
+                console.print(f"~ {escape(line)}", style="yellow")
             console.print()
 
     # Render REMOVED blocks
@@ -40,9 +41,9 @@ def render_diff(removed: List[DiffBlock], added: List[DiffBlock], moved: List[Mo
         console.print(Panel("REMOVED BLOCKS (No cross-file match)", style="red bold"))
         for rem in removed:
             header = f"--- {rem.file_path}:{rem.start_line}"
-            console.print(header, style="red bold")
+            console.print(escape(header), style="red bold")
             for line in rem.raw_lines:
-                console.print(line, style="red")
+                console.print(escape(line), style="red")
             console.print()
 
     # Render ADDED blocks
@@ -50,9 +51,9 @@ def render_diff(removed: List[DiffBlock], added: List[DiffBlock], moved: List[Mo
         console.print(Panel("ADDED BLOCKS (No cross-file match)", style="green bold"))
         for add in added:
             header = f"+++ {add.file_path}:{add.start_line}"
-            console.print(header, style="green bold")
+            console.print(escape(header), style="green bold")
             for line in add.raw_lines:
-                console.print(line, style="green")
+                console.print(escape(line), style="green")
             console.print()
 
 def render_json(removed: List[DiffBlock], added: List[DiffBlock], moved: List[MovedBlock], renamed: List[RenamedFile] = None):
