@@ -16,18 +16,7 @@ def normalize(text: str) -> str:
     """Normalize whitespace for matching."""
     return " ".join(text.split())
 
-def find_moves(removed_blocks: List[DiffBlock], added_blocks: List[DiffBlock],
-               min_words=20) -> tuple[List[DiffBlock], List[DiffBlock], List[MovedBlock]]:
-    """
-    Finds moved blocks between removed and added blocks.
-    Handles two cases:
-      1. Exact move: entire removed block == entire added block
-      2. Split move: removed block was split into multiple smaller added blocks
-         (added block content is a substring of the removed block)
-
-    Returns:
-        (remaining_removed, remaining_added, moved_blocks)
-    """
+def find_moves(removed_blocks, added_blocks, min_words=20):
     remaining_removed = []
     remaining_added = list(added_blocks)
     moved_blocks = []
@@ -43,11 +32,7 @@ def find_moves(removed_blocks: List[DiffBlock], added_blocks: List[DiffBlock],
         for i, added in enumerate(remaining_added):
             if added.word_count < min_words:
                 continue
-
             norm_add = normalize(added.content)
-
-            # Case 1: exact match (block moved wholesale)
-            # Case 2: subset match (block was split; this added chunk came from removed)
             if norm_rem == norm_add or norm_add in norm_rem:
                 moved_blocks.append(MovedBlock(
                     source_file=removed.file_path,
@@ -60,10 +45,29 @@ def find_moves(removed_blocks: List[DiffBlock], added_blocks: List[DiffBlock],
                 matched_indices.append(i)
 
         if matched_indices:
-            # Pop matched added blocks in reverse so indices stay valid
             for i in sorted(matched_indices, reverse=True):
                 remaining_added.pop(i)
-            # The removed block was accounted for — don't add to remaining_removed
+
+            # ← THE FIX: compute what wasn't moved
+            residual = norm_rem
+            for i in matched_indices:
+                # matched_indices were popped, so grab content from moved_blocks
+                pass
+
+            # Rebuild residual by stripping matched content from removed
+            residual = norm_rem
+            for m in moved_blocks[-len(matched_indices):]:
+                residual = residual.replace(normalize(m.source_content), "", 1)
+            residual = residual.strip()
+
+            if residual:
+                remaining_removed.append(DiffBlock(
+                    file_path=removed.file_path,
+                    start_line=removed.start_line,
+                    content=residual,
+                    is_added=False,
+                    raw_lines=[f"-{line}" for line in residual.split('\n')]
+                ))
         else:
             remaining_removed.append(removed)
 
