@@ -82,23 +82,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-rgs.ref_old, args.ref_new, args.files)
-
-    if not old_files and not new_files and not renamed:
-        if args.json:
-            render_json([], [], [], [])
-        else:
-            print("No differences found.")
-        return
-
-    removed, added, moved = find_moves(
-        old_files, new_files, min_words=args.min_words, engine_config=_engine_config(args))
-
-    if args.json:
-        render_json(removed, added, moved, renamed)
-    else:
-        render_diff(removed, added, moved, renamed)
-
-
-if __name__ == "__main__":
-    main()

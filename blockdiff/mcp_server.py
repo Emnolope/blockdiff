@@ -77,25 +77,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-mps(_payload([], [], [], []), indent=2)
-
-        engine_config = dict(_ENGINE_DEFAULTS)
-        if engine_overrides:
-            # Only accept keys the engine actually declares. Ignore junk.
-            for k, v in engine_overrides.items():
-                if k in _ENGINE_DEFAULTS:
-                    engine_config[k] = v
-
-        removed, added, moved = find_moves(
-            old_files, new_files, min_words=min_words, engine_config=engine_config)
-        return json.dumps(_payload(removed, added, moved, renamed), indent=2)
-    except Exception as e:
-        return json.dumps({"error": str(e)}, indent=2)
-
-
-def run():
-    mcp.run()
-
-
-if __name__ == "__main__":
-    run()
