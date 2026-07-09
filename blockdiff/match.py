@@ -1,23 +1,24 @@
-# match.py — find content that moved between files.
+
+# match.py — recover which file each piece of a diff belongs to.
 #
-# Git shows a cross-file move as a delete in A + insert in B — indistinguishable
-# from real loss. So we don't diff files pairwise (pairwise literally cannot see
-# content leaving a file). We glue all old files into one blob, all new into
-# another, and diff ONCE; a cross-file move becomes an in-blob move the engine
-# already finds. The surviving hard part — putting each block back in its file —
-# is split into two honest stages because the seam between them is where every
-# prior version hid a lie:
+# Git reports a cross-file move as a delete in one file plus an insert in
+# another, which is indistinguishable from loss. To see the move, we glue all
+# old files into one blob and all new files into another, then diff ONCE. A
+# cross-file move is now an in-blob move the engine finds natively.
 #
-#     STAGE 1  desentinel: engine blocks -> TaggedFragments.  Facts only.
-#     STAGE 2  classify:   TaggedFragments -> moved/removed/added.  Judgment.
+# The engine decides everything: what moved, what's noise, how to resolve two
+# near-identical blocks. That judgment lives in cacycle's keystroke-energy
+# metric. By the time blocks arrive here, every verdict is final in `fixed`.
 #
-# Stage 1 is a real inspectable value, not a claim in a comment, because a
-# comment asserting a stage the code doesn't actually isolate is what let a
-# false invariant steer a past branch into a silent mis-attribution.
+# This file only does attribution: put each block back in its file. Two stages:
+#     STAGE 1  desentinel: engine blocks -> TaggedFragments (facts)
+#     STAGE 2  classify:   TaggedFragments -> moved / removed / added (reads verdicts)
+#
+# If twins seem mishandled, tune the engine's energy knobs (move_base,
+# move_log_k, w_char). Never add a second decision layer here.
 
 import re
 import uuid
-from collections import Counter
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
 
@@ -42,20 +43,19 @@ class ResultBlock:
 
 @dataclass
 class TaggedFragment:
-    """One piece of the diff after sentinels are cut out: a fact, not a verdict.
-    `side` records which stream it was read from ('old'/'new') because a '='
-    block lives on both and its file differs per side — reconciling that is
-    stage 2's job, so stage 1 refuses to."""
+    """A piece of the diff with its sentinels stripped and its file recovered.
+    `side` is 'old' or 'new'; a '=' block exists on both sides and its file can
+    differ per side, so the two are kept separate until classify reconciles."""
     file_path: str
     kind: str          # '=', '-', '+'
     side: str          # 'old' or 'new'
     fixed: Optional[bool]
-    content: str       # sentinels removed, structural glue trimmed
+    content: str
 
 
-# Private-use fences no real text can contain, wrapping 32 random hex: the
-# uniqueness is what makes the engine treat each sentinel as an anchor it can
-# never fold into a moved run.
+# Private-use fences no real text contains, wrapping 32 random hex. The
+# uniqueness makes the engine anchor each sentinel instead of folding it into a
+# moved run.
 _FENCE, _END = "\ue000\ue001\ue002", "\ue003\ue004\ue005"
 _SEP_RE = re.compile(re.escape(_FENCE) + r"([0-9a-f]{32})" + re.escape(_END))
 
@@ -65,10 +65,10 @@ def _new_sentinel() -> str:
 
 
 def build_blobs(old_files: Dict[str, str], new_files: Dict[str, str]):
-    """Both blobs open with a sentinel so nothing ever precedes the first one —
-    that absence is what makes stage-1 attribution a local split with no
-    look-back. Same `order` drives both sides, so a file's sentinel is identical
-    across old and new and the engine can anchor it."""
+    """Concatenate files into two blobs. Each file is preceded by a sentinel
+    that is identical across old and new, so the engine anchors it and stage 1
+    can name every fragment by the sentinel to its left. Both blobs open with a
+    sentinel, so no fragment ever precedes the first one."""
     order = list(dict.fromkeys(list(old_files) + list(new_files)))
     sep_to_file: Dict[str, str] = {}
     old_parts, new_parts = [], []
@@ -86,11 +86,10 @@ def build_blobs(old_files: Dict[str, str], new_files: Dict[str, str]):
 def _read_side(blocks: List[EngineBlock], kinds: Tuple[str, ...], side: str,
                sep_to_file: Dict[str, str], first_file: Optional[str]
                ) -> List[TaggedFragment]:
-    """STAGE 1, one side. Walk the blocks this side can see, split each on its
-    sentinels, and tag every surviving piece with the file named by the sentinel
-    to its left. `open_file` is the whole of the state: it names the file a
-    sentinel-free fragment falls into, and every sentinel overwrites it
-    absolutely, so it cannot accumulate error the way a counted cursor did."""
+    """Walk the blocks this side can see, split each on its sentinels, and tag
+    every surviving piece with the file named by the sentinel to its left.
+    `open_file` names the current file; each sentinel overwrites it absolutely,
+    so it never drifts."""
     fragments: List[TaggedFragment] = []
     open_file = first_file
 
@@ -119,18 +118,16 @@ def _read_side(blocks: List[EngineBlock], kinds: Tuple[str, ...], side: str,
 def desentinel(blocks: List[EngineBlock], sep_to_file: Dict[str, str],
                first_file: Optional[str]
                ) -> Tuple[List[TaggedFragment], List[TaggedFragment]]:
-    """STAGE 1 whole. Two reads because a side only sees some blocks: old sees
-    '='/'-', new sees '='/'+'. Returned as (old_fragments, new_fragments) — a
-    literal value you can print and assert on, which is the entire point of
-    giving this stage a type instead of leaving it in spirit."""
+    """Two reads: the old side sees '='/'-', the new side sees '='/'+'.
+    Returns (old_fragments, new_fragments)."""
     old_frags = _read_side(blocks, ('=', '-'), 'old', sep_to_file, first_file)
     new_frags = _read_side(blocks, ('=', '+'), 'new', sep_to_file, first_file)
     return old_frags, new_frags
 
 
 def _line_of(content: str, fragment: str) -> int:
-    """Post-hoc, never a running offset, so it can't drift. -1 if the engine
-    split the fragment mid-token and it isn't present verbatim."""
+    """Line number of a fragment within its file, or -1 if it isn't present
+    verbatim. Computed by lookup, never by a running offset, so it can't drift."""
     idx = content.find(fragment)
     if idx == -1 and fragment.strip():
         idx = content.find(fragment.strip())
@@ -138,9 +135,10 @@ def _line_of(content: str, fragment: str) -> int:
 
 
 def _sole_home(fragments: List[TaggedFragment]) -> Dict[str, str]:
-    """Map content -> its file, but only for content with exactly one home.
-    Ambiguous content (same text in several files) is omitted so stage 2 can
-    refuse to guess where it went — the criss-cross the user feared."""
+    """Map content -> file, but only for content that lives in exactly one file.
+    Content appearing in several files is omitted, so a move whose source or
+    target is ambiguous is left to fall through as add/remove rather than
+    guessed into a wrong pairing."""
     homes: Dict[str, List[str]] = {}
     for frag in fragments:
         homes.setdefault(frag.content, []).append(frag.file_path)
@@ -148,9 +146,9 @@ def _sole_home(fragments: List[TaggedFragment]) -> Dict[str, str]:
 
 
 def _proven_moves(old_frags, new_frags, old_files, new_files) -> List[MovedBlock]:
-    """The engine already proved these moved (fixed is False); we only recover
-    FROM/TO. A move is trustworthy only when its content has one home per side
-    and the homes differ — otherwise which instance went where is a guess."""
+    """Recover FROM/TO for blocks the engine already proved moved (fixed is
+    False). A move is reported only when its content has a single home on each
+    side and those homes differ."""
     old_moved = [f for f in old_frags if f.kind == '=' and f.fixed is False]
     new_moved = [f for f in new_frags if f.kind == '=' and f.fixed is False]
     old_home = _sole_home(old_moved)
@@ -166,37 +164,12 @@ def _proven_moves(old_frags, new_frags, old_files, new_files) -> List[MovedBlock
     return moves
 
 
-def _promote_twins(removed: List[ResultBlock], added: List[ResultBlock]):
-    """Two near-identical paragraphs anchor nothing, so the engine honestly
-    emits them as separate -/+. Upgrade a pair to a move only when its text is
-    byte-identical and unique on each side; positional pairing of duplicates is
-    the criss-cross bug, so 2+ on either side stays an honest add+remove."""
-    rem_counts = Counter(r.content for r in removed)
-    add_counts = Counter(a.content for a in added)
-    first_add = {}
-    for i, a in enumerate(added):
-        first_add.setdefault(a.content, i)
-
-    used_r, used_a, promoted = set(), set(), []
-    for ri, r in enumerate(removed):
-        if rem_counts[r.content] == 1 and add_counts.get(r.content, 0) == 1:
-            ai = first_add[r.content]
-            a = added[ai]
-            promoted.append(MovedBlock(r.file_path, r.start_line,
-                                       a.file_path, a.start_line, r.content))
-            used_r.add(ri)
-            used_a.add(ai)
-
-    kept_removed = [r for i, r in enumerate(removed) if i not in used_r]
-    kept_added = [a for i, a in enumerate(added) if i not in used_a]
-    return kept_removed, kept_added, promoted
-
-
 def classify(old_frags: List[TaggedFragment], new_frags: List[TaggedFragment],
              old_files: Dict[str, str], new_files: Dict[str, str]
              ) -> Tuple[List[ResultBlock], List[ResultBlock], List[MovedBlock]]:
-    """STAGE 2. Pure judgment on stage-1 facts: no regex, no sentinels, no carry
-    state — those all died in stage 1. Just verdicts."""
+    """Read the engine's verdicts: proven moves become MovedBlocks with
+    recovered FROM/TO; every '-' is removed; every '+' is added. No re-deciding
+    — a block the engine declined to anchor is honestly an add and a remove."""
     moved = _proven_moves(old_frags, new_frags, old_files, new_files)
 
     removed = [ResultBlock(f.file_path, _line_of(old_files.get(f.file_path, ""), f.content), f.content)
@@ -204,8 +177,6 @@ def classify(old_frags: List[TaggedFragment], new_frags: List[TaggedFragment],
     added = [ResultBlock(f.file_path, _line_of(new_files.get(f.file_path, ""), f.content), f.content)
              for f in new_frags if f.kind == '+']
 
-    removed, added, promoted = _promote_twins(removed, added)
-    moved.extend(promoted)
     return removed, added, moved
 
 
@@ -213,9 +184,7 @@ def find_moves(old_files: Dict[str, str],
                new_files: Dict[str, str],
                engine_config: Optional[Dict] = None
                ) -> Tuple[List[ResultBlock], List[ResultBlock], List[MovedBlock]]:
-    """Orchestrator: glue -> diff once -> stage 1 facts -> stage 2 judgment.
-    The thinness here is deliberate; all the danger lives in the two named
-    stages, where it can be seen."""
+    """Glue -> diff once -> recover fragments -> read verdicts."""
     old_blob, new_blob, sep_to_file, first_file = build_blobs(old_files, new_files)
 
     engine = BlockDiffEngine(**(engine_config or {}))
