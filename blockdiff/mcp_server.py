@@ -1,48 +1,101 @@
+# mcp_server.py — machine-facing entry point.
+#
+#
+# One source of truth for engine knobs: BlockDiffEngine.TUNABLE_PARAMS. The
+# human CLI generates flags from it; we generate defaults from it. Same table.
+
 from mcp.server.fastmcp import FastMCP
-import subprocess
 import json
 
-from blockdiff.parse import parse_diff
-from blockdiff.match import find_moves
+from .parse import get_changed_files, get_file_content
+from .match import find_moves
+from .output import _payload
+from .cacycle import BlockDiffEngine
 
 mcp = FastMCP("blockdiff")
 
+# Defaults pulled straight from the engine's declared knobs.
+_ENGINE_DEFAULTS = {name: default for name, _t, default, _h in BlockDiffEngine.TUNABLE_PARAMS}
+
+
 @mcp.tool()
-def blockdiff(repo_path: str = ".", git_args: list[str] = [], file1: str = "", file2: str = "",
-              diff_text: str = "", min_words: int = 20) -> str:
+def blockdiff(repo_path: str = ".", ref_old: str = "HEAD~1", ref_new: str = "HEAD",
+              file1: str = "", file2: str = "",
+              engine_overrides: dict = None) -> str:
+    """
+    Detect cross-file moved blocks.
+
+    Pipeline: git tracks the changed files -> their old/new contents get
+    concatenated into two blobs (one per version) separated by runtime-random
+    fenced sentinels -> cacycle runs ONE block-move diff over the whole blob ->
+    output is parsed back to per-file attribution via the sentinels.
+
+    Engine knobs live in BlockDiffEngine.TUNABLE_PARAMS. Pass any subset via
+    engine_overrides, e.g. {"char_diff": false, "block_min_length": 5}. Unset
+    knobs use the engine's own defaults. The human CLI exposes the identical
+    set as flags — clanker-human parity.
+    """
     try:
-        if diff_text:
-            text = diff_text
-        elif file1 and file2:
-            r = subprocess.run(["git", "diff", "--no-index", file1, file2],
-                                capture_output=True, text=True, cwd=repo_path, stdin=subprocess.DEVNULL)
-            text = r.stdout
+        old_files, new_files, renamed = {}, {}, []
+        if file1 and file2:
+            with open(file1, encoding="utf-8", errors="replace") as f:
+                old_files[file1] = f.read()
+            with open(file2, encoding="utf-8", errors="replace") as f:
+                new_files[file2] = f.read()
         else:
-            cmd = ["git", "diff"] + list(git_args)
-            r = subprocess.run(cmd, capture_output=True, text=True, cwd=repo_path, stdin=subprocess.DEVNULL)
-            text = r.stdout
+            changed, renamed = get_changed_files(repo_path, ref_old, ref_new)
+            for path in changed:
+                oc = get_file_content(repo_path, ref_old, path)
+                nc = get_file_content(repo_path, ref_new, path)
+                # Same parity fix as cli._collect: don't drop a side purely for
+                # falsy content; keep regions aligned for attribution.
+                if oc or (not oc and not nc):
+                    old_files[path] = oc
+                if nc or (not oc and not nc):
+                    new_files[path] = nc
 
-        if not text.strip():
-            return json.dumps({"message": "No differences found.", "removed": [], "added": [], "moved": [], "summary": {}}, indent=2)
+        if not old_files and not new_files and not renamed:
+            return json.dumps(_payload([], [], [], []), indent=2)
 
-        removed, added, renamed = parse_diff(text)
-        rem_out, add_out, moved_out = find_moves(removed, added, min_words=min_words)
+        engine_config = dict(_ENGINE_DEFAULTS)
+        if engine_overrides:
+            # Only accept keys the engine actually declares. Ignore junk.
+            for k, v in engine_overrides.items():
+                if k in _ENGINE_DEFAULTS:
+                    engine_config[k] = v
 
-        res = {
-            "renamed": [{"old_path": r.old_path, "new_path": r.new_path, "similarity": r.similarity} for r in renamed],
-            "removed": [{"file": r.file_path, "line_start": r.start_line, "content": r.content} for r in rem_out],
-            "added": [{"file": a.file_path, "line_start": a.start_line, "content": a.content} for a in add_out],
-            "moved": [{"from_file": m.source_file, "from_line": m.source_line, "to_file": m.target_file,
-                       "to_line": m.target_line, "content": m.target_content} for m in moved_out],
-            "summary": {"renamed_count": len(renamed), "removed_count": len(rem_out),
-                        "added_count": len(add_out), "moved_count": len(moved_out)}
-        }
-        return json.dumps(res, indent=2)
+        removed, added, moved = find_moves(
+            old_files, new_files, engine_config=engine_config)
+        return json.dumps(_payload(removed, added, moved, renamed), indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)}, indent=2)
 
+
 def run():
     mcp.run()
+
+
+if __name__ == "__main__":
+    run()
+mps(_payload([], [], [], []), indent=2)
+
+        engine_config = dict(_ENGINE_DEFAULTS)
+        if engine_overrides:
+            # Only accept keys the engine actually declares. Ignore junk.
+            for k, v in engine_overrides.items():
+                if k in _ENGINE_DEFAULTS:
+                    engine_config[k] = v
+
+        removed, added, moved = find_moves(
+            old_files, new_files, min_words=min_words, engine_config=engine_config)
+        return json.dumps(_payload(removed, added, moved, renamed), indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+def run():
+    mcp.run()
+
 
 if __name__ == "__main__":
     run()

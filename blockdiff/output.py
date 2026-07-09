@@ -1,97 +1,74 @@
 import json
 from typing import List
 from rich.console import Console
-from rich.text import Text
 from rich.panel import Panel
-from rich.markdown import Markdown
 from rich.markup import escape
 
-from .parse import DiffBlock, RenamedFile
-from .match import MovedBlock
+from .parse import RenamedFile
+from .match import MovedBlock, ResultBlock
 
-def render_diff(removed: List[DiffBlock], added: List[DiffBlock], moved: List[MovedBlock], renamed: List[RenamedFile] = None):
-    """
-    Renders the diff using rich, outputting RENAMED, MOVED, ADDED, and REMOVED blocks.
-    """
-    if renamed is None:
-        renamed = []
-        
+
+def _payload(removed: List[ResultBlock], added: List[ResultBlock],
+             moved: List[MovedBlock], renamed: List[RenamedFile] = None) -> dict:
+    """Single source of truth for the structured output. CLI --json and the
+    MCP server both serialize THIS. Keeps clanker-human parity honest."""
+    renamed = renamed or []
+    return {
+        "renamed": [{"old_path": r.old_path, "new_path": r.new_path, "similarity": r.similarity}
+                    for r in renamed],
+        "removed": [{"file": r.file_path, "line_start": r.start_line, "content": r.content}
+                    for r in removed],
+        "added": [{"file": a.file_path, "line_start": a.start_line, "content": a.content}
+                  for a in added],
+        "moved": [{"from_file": m.source_file, "from_line": m.source_line,
+                   "to_file": m.target_file, "to_line": m.target_line,
+                   "content": m.content} for m in moved],
+        "summary": {"renamed_count": len(renamed), "removed_count": len(removed),
+                    "added_count": len(added), "moved_count": len(moved)},
+    }
+
+
+def render_diff(removed: List[ResultBlock], added: List[ResultBlock],
+                moved: List[MovedBlock], renamed: List[RenamedFile] = None):
+    renamed = renamed or []
     console = Console()
-    
-    # Render RENAMED files first
+
     if renamed:
         console.print(Panel("RENAMED FILES", style="cyan bold"))
         for r in renamed:
-            header = f"RENAMED: {r.old_path} -> {r.new_path} ({r.similarity}%)"
-            console.print(escape(header), style="cyan bold")
+            console.print(escape(f"RENAMED: {r.old_path} -> {r.new_path} ({r.similarity}%)"),
+                          style="cyan bold")
         console.print()
-    
-    # Render MOVED blocks
+
     if moved:
         console.print(Panel("MOVED BLOCKS", style="yellow bold"))
         for m in moved:
-            header = f"FROM: {m.source_file}:{m.source_line} -> TO: {m.target_file}:{m.target_line}"
-            console.print(escape(header), style="yellow bold")
-            for line in m.source_content.split('\n'):
+            console.print(escape(f"FROM: {m.source_file}:{m.source_line} -> "
+                                 f"TO: {m.target_file}:{m.target_line}"), style="yellow bold")
+            for line in m.content.split('\n'):
                 console.print(f"~ {escape(line)}", style="yellow")
             console.print()
 
-    # Render REMOVED blocks
     if removed:
         console.print(Panel("REMOVED BLOCKS (No cross-file match)", style="red bold"))
         for rem in removed:
-            header = f"--- {rem.file_path}:{rem.start_line}"
-            console.print(escape(header), style="red bold")
-            for line in rem.raw_lines:
+            console.print(escape(f"--- {rem.file_path}:{rem.start_line}"), style="red bold")
+            for line in rem.content.split('\n'):
                 console.print(escape(line), style="red")
             console.print()
 
-    # Render ADDED blocks
     if added:
         console.print(Panel("ADDED BLOCKS (No cross-file match)", style="green bold"))
         for add in added:
-            header = f"+++ {add.file_path}:{add.start_line}"
-            console.print(escape(header), style="green bold")
-            for line in add.raw_lines:
+            console.print(escape(f"+++ {add.file_path}:{add.start_line}"), style="green bold")
+            for line in add.content.split('\n'):
                 console.print(escape(line), style="green")
             console.print()
 
-def render_json(removed: List[DiffBlock], added: List[DiffBlock], moved: List[MovedBlock], renamed: List[RenamedFile] = None):
-    """
-    Outputs the diff as JSON.
-    """
-    if renamed is None:
-        renamed = []
-        
-    res = {
-        "renamed": [
-            {"old_path": r.old_path, "new_path": r.new_path, "similarity": r.similarity}
-            for r in renamed
-        ],
-        "removed": [
-            {"file": r.file_path, "line_start": r.start_line, "content": r.content}
-            for r in removed
-        ],
-        "added": [
-            {"file": a.file_path, "line_start": a.start_line, "content": a.content}
-            for a in added
-        ],
-        "moved": [],
-        "summary": {
-            "renamed_count": len(renamed),
-            "removed_count": len(removed),
-            "added_count": len(added),
-            "moved_count": len(moved)
-        }
-    }
+    if not (renamed or moved or removed or added):
+        console.print("No significant block changes detected.", style="dim")
 
-    for m in moved:
-        res["moved"].append({
-            "from_file": m.source_file,
-            "from_line": m.source_line,
-            "to_file": m.target_file,
-            "to_line": m.target_line,
-            "content": m.target_content
-        })
 
-    print(json.dumps(res, indent=2))
+def render_json(removed: List[ResultBlock], added: List[ResultBlock],
+                moved: List[MovedBlock], renamed: List[RenamedFile] = None):
+    print(json.dumps(_payload(removed, added, moved, renamed), indent=2))

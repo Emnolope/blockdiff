@@ -1,6 +1,6 @@
 # blockdiff
 
-A drop-in replacement tool for `git diff` that detects cross-file moved lines.
+A tool that detects **cross-file moved blocks**.
 
 > [!NOTE]
 > This project was vibe coded in an IDE by **Antigravity** (powered by **Gemini 3.0 Flash**).
@@ -9,7 +9,7 @@ A drop-in replacement tool for `git diff` that detects cross-file moved lines.
 `git diff --color-moved` detects moved lines but only within the same file. It cannot detect when a paragraph or code block moves from `file_a.md` to `file_b.md`. Standard `git diff` shows the move as a deletion in A and an insertion in B, which is indistinguishable from actual content loss.
 
 ## The Solution
-`blockdiff` parses `git diff` output and reclassifies cross-file moves as a single `MOVED` block instead. It works on markdown, source code, and any text files.
+`blockdiff` uses git for one job only: **tracking which files changed** (via `git ls-tree` on two refs, bucketed by blob hash — no rename heuristics, only hash identity). It then concatenates the old contents of the changed files into one blob and the new contents into another, separated by runtime-random sentinels, and runs a single block-move diff (a Python port of Cacycle's wikEd diff) over the whole thing. Blocks that flew between files are caught natively in one pass and re-attributed to their source/target files by the sentinels. It works on markdown, source code, and any text files.
 
 ## Installation
 
@@ -22,13 +22,9 @@ pip install "blockdiff[mcp]"
 
 ## Usage
 
-Use it as a drop-in replacement for `git diff`:
-
 ```bash
-git diff HEAD | blockdiff
-
-# Or run directly:
-blockdiff HEAD
+# Diff two refs:
+blockdiff HEAD~1 HEAD
 blockdiff HEAD~3 HEAD
 blockdiff abc123 def456
 
@@ -36,22 +32,21 @@ blockdiff abc123 def456
 blockdiff --files old.md new.md
 
 # Output as JSON:
-blockdiff HEAD --json
+blockdiff HEAD~1 HEAD --json
 ```
 
 ## Output Format
 
-`blockdiff` uses the standard diff format but adds a new block type:
+* **Renamed (Cyan)**: A file whose blob hash is byte-identical under a new name. This is identity, not a similarity guess — always reported at 100%.
+* **Removed (Red)**: Content deleted, no cross-file match found.
+* **Added (Green)**: Content inserted, no cross-file match found.
+* **Moved (Yellow)**: Content that disappeared from one file and appeared in another. Shown as `FROM: file_a.md:47 -> TO: file_b.md:12`.
 
-* **Removed (Red)**: Content deleted, no match found anywhere
-* **Added (Green)**: Content inserted, no match found anywhere  
-* **Moved (Yellow)**: Content that disappeared from one file and appeared in another. Shown as `FROM: file_a.md:47 -> TO: file_b.md:12`. If the block was modified slightly, word-level inline diffs are shown.
-
-Moved blocks are removed from the deleted and added block lists entirely. Small blocks (under 20 words) are ignored to prevent noise on minor edits.
+Moved blocks are removed from the deleted and added lists entirely. The `--min-words` gate is **soft**: long low-signal blocks are dropped, but short-but-structural lines (a lone heading, a delimiter like `# [[splitter]]`) always survive. Moves are never gated by size — a relocation is trustworthy because the engine already proved it's the same content in a new place.
 
 ## Using with AI agents (MCP)
 
-`blockdiff` includes an MCP server that exposes the move detection tool to AI agents.
+`blockdiff` includes an MCP server that exposes the move detection tool to AI agents. Every engine knob available to the human CLI is available to the agent, and vice versa — clanker-human parity, generated from a single `BlockDiffEngine.TUNABLE_PARAMS` table.
 
 Add to your MCP config:
 ```json
@@ -64,12 +59,11 @@ Add to your MCP config:
 }
 ```
 
-The agent can now call `blockdiff()` after modifying files to verify nothing was permanently lost before committing.
+The agent can call `blockdiff()` after modifying files to verify nothing was permanently lost before committing.
 
 ## TODO
 
 * **Semantic equivalence checking**: verify that reorganized content is informationally lossless (detect merged/split paragraphs, paraphrased moves, synthesized content)
 * **LLM-assisted residual audit**: for unmatched deletions
 * **Graph diff**: for wikilink structure (Obsidian vaults)
-* **Configurable similarity threshold**: (default 0.8)
 * **IDE/editor plugins**
