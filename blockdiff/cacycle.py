@@ -23,20 +23,26 @@ from typing import List, Dict, Optional, Any, Tuple
 
 @dataclass
 class TokenInfo:
-    """Represents a single token (word, char, line) in the doubly-linked list."""
+    """One token in the doubly-linked list."""
     token: str
     prev: Optional[int] = None
     next: Optional[int] = None
     link: Optional[int] = None
     number: Optional[int] = None
     unique: bool = False
-    char_offset: Optional[int] = None  # char index in the blob where this token starts
+    char_offset: Optional[int] = None
+    # Caller-pinned state. Set by _apply_prelinks BEFORE block detection.
+    #   anchor=True            -> pinned stationary (ground frame). fixed=True.
+    #   prelink_moved=True     -> pinned as a caller-asserted MOVE. The engine
+    #                             did not find this; a prior engine did. Link it,
+    #                             believe it, diff around it, never re-litigate.
+    anchor: bool = False
+    prelink_moved: bool = False
 
 
 @dataclass
 class DiffBlock:
-    """A highly structured data representation of a diffed block of text."""
-    type: str  # '=', '-', '+', or '|' (move marker)
+    type: str
     text: str
     old_number: Optional[int] = None
     new_number: Optional[int] = None
@@ -48,22 +54,18 @@ class DiffBlock:
     section: Optional[int] = None
     group: Optional[int] = None
     fixed: Optional[bool] = None
-    moved_to_group: Optional[int] = None  # If type=='|', the group index it moved to
-
-    # Character-space position in the blob. THE sane coordinate match.py reads.
-    # '-' has only old_char, '+' has only new_char, '=' has both, '|' has old_char.
-    # Intrinsic to content; never overwritten by positioning or sorting.
+    moved_to_group: Optional[int] = None
     old_char: Optional[int] = None
     new_char: Optional[int] = None
-
-    # Internal array indices for O(1) lookups (parity with original JS heuristics)
     old_block_idx: Optional[int] = None
     new_block_idx: Optional[int] = None
+    # Caller-pinned classification, carried from tokens up to blocks.
+    is_anchor: bool = False        # stationary ground frame (do not move it)
+    is_prelink_moved: bool = False # caller-asserted move (do not re-litigate it)
 
 
 @dataclass
 class DiffGroup:
-    """Represents a contiguous group of blocks, used to detect large moved sections."""
     old_number: int
     block_start: int
     block_end: int
@@ -74,7 +76,7 @@ class DiffGroup:
     fixed: bool
     moved_from_group: Optional[int] = None
     color_id: Optional[int] = None
-
+    is_anchor: bool = False        # NEW: singleton ground-frame group
 
 # --- Regex Setup ---
 def _parse_unicode_ranges(s: str) -> str:
@@ -303,8 +305,41 @@ class BlockDiffEngine:
         
         self.max_words = 0
 
-    def compute_diff(self, old_string: str, new_string: str) -> List[DiffBlock]:
-        """Main entry point. Takes two strings and returns typed DiffBlocks."""
+    def compute_diff(self, old_string: str, new_string: str,
+                     prelinks=None) -> List[DiffBlock]:
+        """Main entry point. old_string -> new_string, returns typed DiffBlocks.
+
+        prelinks: OPTIONAL list of caller-asserted correspondences. Each is a
+        tuple (old_span, new_span, kind) where old_span/new_span are
+        (start_char, end_char) half-open character ranges into old_string /
+        new_string respectively, and kind is one of:
+
+            "stationary" -> the two ranges are the SAME content in the SAME
+                            logical place. Pin them to the ground frame: they
+                            become their own '=' blocks, their own groups,
+                            forced fixed=True, exempt from the move DP and from
+                            unlink. THIS is how a caller (e.g. match.py's
+                            sentinels) nails a coordinate frame. The engine
+                            never inspects the content — it trusts the caller.
+
+            "moved"      -> the two ranges are the SAME content in a DIFFERENT
+                            place, as ALREADY DETERMINED BY ANOTHER PASS/ENGINE.
+                            The engine force-links them, marks them a move it is
+                            NOT allowed to re-litigate, and diffs only around
+                            them. THIS is diff warm-starting / engine chaining:
+                            engine #1's output becomes engine #2's input, so the
+                            expensive pass never re-examines what the cheap pass
+                            already proved. (The 150MB-change-one-line dream:
+                            pin everything identical, diff only the residual.)
+
+        prelinks=None -> EXACT legacy behavior, total no-op. Every new branch is
+        gated on a prelink flag that is False when no prelinks are supplied.
+
+        NOTE ON COORDINATES: spans are CHARACTER offsets, not token indices,
+        because tokenization happens INSIDE this method — the caller cannot know
+        token numbers in advance. We resolve spans to tokens ourselves, after
+        enumerate_tokens stamps char_offset on every token.
+        """
         self.blocks.clear()
         self.groups.clear()
         self.sections.clear()
@@ -313,29 +348,23 @@ class BlockDiffEngine:
         # Trivial Trap 1: Identical
         if old_string == new_string:
             return [DiffBlock(
-                type='=', 
-                text=new_string, 
-                words=len(list(RE_COUNT_WORDS.finditer(new_string))), 
-                chars=len(new_string)
-            )]
+                type='=', text=new_string,
+                words=len(list(RE_COUNT_WORDS.finditer(new_string))),
+                chars=len(new_string))]
 
-        # Trivial Trap 2: Old text deleted entirely
+        # Trivial Trap 2: Old empty
         if not old_string or (old_string == '\n' and new_string.endswith('\n')):
             return [DiffBlock(
-                type='+', 
-                text=new_string, 
-                words=len(list(RE_COUNT_WORDS.finditer(new_string))), 
-                chars=len(new_string)
-            )]
+                type='+', text=new_string,
+                words=len(list(RE_COUNT_WORDS.finditer(new_string))),
+                chars=len(new_string))]
 
-        # Trivial Trap 3: New text deleted entirely
+        # Trivial Trap 3: New empty
         if not new_string or (new_string == '\n' and old_string.endswith('\n')):
             return [DiffBlock(
-                type='-', 
-                text=old_string, 
-                words=len(list(RE_COUNT_WORDS.finditer(old_string))), 
-                chars=len(old_string)
-            )]
+                type='-', text=old_string,
+                words=len(list(RE_COUNT_WORDS.finditer(old_string))),
+                chars=len(old_string))]
 
         self.new_text = DiffText(new_string)
         self.old_text = DiffText(old_string)
@@ -345,7 +374,7 @@ class BlockDiffEngine:
         self._run_split_and_diff('line', refine=True)
         self._run_split_and_diff('sentence', refine=True)
         self._run_split_and_diff('chunk', refine=True)
-        
+
         self.new_text.split_refine('word')
         self.old_text.split_refine('word')
         self._calculate_diff('word', recurse=True)
@@ -360,12 +389,91 @@ class BlockDiffEngine:
             self._slide_gaps(self.new_text, self.old_text)
             self._slide_gaps(self.old_text, self.new_text)
 
-        # 3. Block Detection & Subsequence Finding
+        # 3. Enumerate, THEN apply caller prelinks, THEN detect blocks.
+        #    Order matters: _apply_prelinks needs char_offset (from enumerate)
+        #    and must run before _detect_blocks (which reads the pinned flags).
         self.new_text.enumerate_tokens()
         self.old_text.enumerate_tokens()
+        self._apply_prelinks(prelinks)
+
         self._detect_blocks()
 
         return self.blocks
+
+
+    def _tokens_in_span(self, text_obj: 'DiffText', start: int, end: int):
+        """Yield token indices whose char_offset falls in [start, end). A pinned
+        span is almost always a RUN of tokens (e.g. a sentinel tokenizes into
+        fence-chars + hex + fence-chars), never a single one — which is exactly
+        why matching by CONTENT STRING was abandoned: there is no single token
+        to match. We match by authored position instead."""
+        i = text_obj.first
+        while i is not None:
+            off = text_obj.tokens[i].char_offset
+            if off is not None and start <= off < end:
+                yield i
+            i = text_obj.tokens[i].next
+
+    def _apply_prelinks(self, prelinks):
+        """Turn caller-asserted (old_span, new_span, kind) correspondences into
+        per-token pins. Pure no-op when prelinks is falsy.
+
+        stationary: mark every token in either span as anchor=True. Downstream,
+        _get_same_blocks refuses to fuse anchor runs with content, _get_groups
+        makes them singleton fixed groups, _set_fixed refuses to un-fix them,
+        _unlink_blocks refuses to eat them.
+
+        moved: force a LINK between the old-span tokens and the new-span tokens
+        positionally, and mark both sides prelink_moved=True. Force-linking means
+        the normal matcher treats them as already-matched identical content and
+        will not tear them apart or re-decide them; marking them moved means we
+        carried a verdict IN rather than computing it. We overwrite any link the
+        engine may have already guessed for these tokens, because the caller's
+        assertion outranks the engine's guess — that is the whole point of a
+        warm start.
+
+        HONEST LIMITATION (read before trusting 'moved' in anger): stationary is
+        proven by the failing whole-body-move tests. 'moved' is wired and
+        structurally coherent but UNPROVEN against a real second engine. If a
+        moved prelink's two spans tokenize to different token COUNTS, we link the
+        positional minimum and leave the remainder to the normal matcher — a
+        deliberate, safe degradation, not a guarantee of optimality."""
+        if not prelinks:
+            return
+
+        for old_span, new_span, kind in prelinks:
+            o_start, o_end = old_span
+            n_start, n_end = new_span
+            old_idxs = list(self._tokens_in_span(self.old_text, o_start, o_end))
+            new_idxs = list(self._tokens_in_span(self.new_text, n_start, n_end))
+
+            if kind == "stationary":
+                for oi in old_idxs:
+                    self.old_text.tokens[oi].anchor = True
+                for ni in new_idxs:
+                    self.new_text.tokens[ni].anchor = True
+
+            elif kind == "moved":
+                # Positional force-link. Overwrite prior guesses; caller wins.
+                for oi, ni in zip(old_idxs, new_idxs):
+                    # Sever any stale links first so we don't leave dangles.
+                    old_link = self.old_text.tokens[oi].link
+                    if old_link is not None:
+                        self.new_text.tokens[old_link].link = None
+                    new_link = self.new_text.tokens[ni].link
+                    if new_link is not None:
+                        self.old_text.tokens[new_link].link = None
+                    # Assert the caller's correspondence.
+                    self.old_text.tokens[oi].link = ni
+                    self.new_text.tokens[ni].link = oi
+                    self.old_text.tokens[oi].prelink_moved = True
+                    self.new_text.tokens[ni].prelink_moved = True
+                    self.old_text.tokens[oi].unique = True
+                    self.new_text.tokens[ni].unique = True
+
+            else:
+                raise ValueError(
+                    f"prelink kind must be 'stationary' or 'moved', got {kind!r}")
 
     def _run_split_and_diff(self, level: str, refine: bool = False):
         """Helper to invoke a split cycle followed by a diff pass."""
@@ -702,41 +810,47 @@ class BlockDiffEngine:
         self._insert_marks()
 
     def _get_same_blocks(self):
-        """Collects identical '=' blocks from old text and indexes them by new text."""
+        """Collect '=' blocks from linked tokens. A run STOPS the instant its
+        pinned character changes — anchor-ness OR prelink-moved-ness flipping
+        both break the run. This is what un-fuses a pinned span from the content
+        next to it (the [sentinel][# title] fusion that hid whole-body moves)."""
         self.blocks.clear()
         j = self.old_text.first
         while j is not None:
             while j is not None and self.old_text.tokens[j].link is None:
                 j = self.old_text.tokens[j].next
-                
+
             if j is not None:
                 i = self.old_text.tokens[j].link
                 i_start, j_start = i, j
                 count, text, unique = 0, "", False
-                
-                while i is not None and j is not None and self.old_text.tokens[j].link == i:
+                block_is_anchor = self.old_text.tokens[j].anchor
+                block_is_moved = self.old_text.tokens[j].prelink_moved
+
+                while (i is not None and j is not None
+                       and self.old_text.tokens[j].link == i
+                       and self.old_text.tokens[j].anchor == block_is_anchor
+                       and self.old_text.tokens[j].prelink_moved == block_is_moved):
                     text += self.old_text.tokens[j].token
                     count += 1
-                    if self.new_text.tokens[i].unique: 
+                    if self.new_text.tokens[i].unique:
                         unique = True
                     i, j = self.new_text.tokens[i].next, self.old_text.tokens[j].next
-                
+
                 self.blocks.append(DiffBlock(
-                    type='=',
-                    text=text,
+                    type='=', text=text,
                     old_number=self.old_text.tokens[j_start].number,
                     new_number=self.new_text.tokens[i_start].number,
-                    old_start_token=j_start,
-                    count=count,
-                    unique=unique,
+                    old_start_token=j_start, count=count,
+                    unique=unique or block_is_anchor,
                     words=len(list(RE_COUNT_WORDS.finditer(text))),
                     chars=len(text),
-                    old_char=self.old_text.tokens[j_start].char_offset,   # NEW
-                    new_char=self.new_text.tokens[i_start].char_offset,   # NEW
-                    old_block_idx=len(self.blocks)  # Crucial for group checking parity
-                ))
-        
-        # O(1) alignment index for array-mutations later
+                    old_char=self.old_text.tokens[j_start].char_offset,
+                    new_char=self.new_text.tokens[i_start].char_offset,
+                    is_anchor=block_is_anchor,
+                    is_prelink_moved=block_is_moved,
+                    old_block_idx=len(self.blocks)))
+
         self.blocks.sort(key=lambda x: x.new_number)
         for block_idx in range(len(self.blocks)):
             self.blocks[block_idx].new_block_idx = block_idx
@@ -762,51 +876,66 @@ class BlockDiffEngine:
             b_idx += 1
 
     def _get_groups(self):
-        """Finds groups of continuous old text blocks."""
+        """Chain contiguous '=' blocks into groups. An anchor block NEVER chains
+        with a non-anchor (it's a singleton ground-frame group, born fixed). A
+        prelink-moved block never chains with content either, so a caller's
+        asserted move stays its own group and can be reported as one clean move."""
         self.groups.clear()
         b_idx = 0
         while b_idx < len(self.blocks):
             g_start = g_end = b_idx
             old_block = self.blocks[g_start].old_block_idx
-
             words = max_words = self.blocks[b_idx].words
             unique = self.blocks[b_idx].unique
             chars = self.blocks[b_idx].chars
-            
+            group_is_anchor = self.blocks[g_start].is_anchor
+            group_is_moved = self.blocks[g_start].is_prelink_moved
+
             for i in range(g_end + 1, len(self.blocks)):
                 if self.blocks[i].old_block_idx != old_block + 1:
                     break
-                
+                # Never chain across a pin boundary (anchor or prelink-moved).
+                if self.blocks[i].is_anchor != group_is_anchor:
+                    break
+                if self.blocks[i].is_prelink_moved != group_is_moved:
+                    break
                 old_block = self.blocks[i].old_block_idx
                 max_words = max(max_words, self.blocks[i].words)
-                if self.blocks[i].unique: 
+                if self.blocks[i].unique:
                     unique = True
                 words += self.blocks[i].words
                 chars += self.blocks[i].chars
                 g_end = i
 
             if g_end >= g_start:
-                fixed = (self.blocks[g_start].section is None)
+                # Anchor groups are born fixed (ground frame). Everything else
+                # keeps the original rule: fixed iff it isn't in a moving section.
+                if group_is_anchor:
+                    fixed = True
+                else:
+                    fixed = (self.blocks[g_start].section is None)
                 for i in range(g_start, g_end + 1):
                     self.blocks[i].group = len(self.groups)
                     self.blocks[i].fixed = fixed
-                    
-                self.groups.append(DiffGroup(
+                grp = DiffGroup(
                     old_number=self.blocks[g_start].old_number,
-                    block_start=g_start,
-                    block_end=g_end,
-                    unique=unique,
-                    max_words=max_words,
-                    words=words,
-                    chars=chars,
-                    fixed=fixed
-                ))
+                    block_start=g_start, block_end=g_end,
+                    unique=unique, max_words=max_words,
+                    words=words, chars=chars, fixed=fixed)
+                grp.is_anchor = group_is_anchor
+                self.groups.append(grp)
                 self.max_words = max(self.max_words, max_words)
                 b_idx = g_end
             b_idx += 1
 
     def _set_fixed(self):
-        """Sets the longest sequence of increasing groups in sections as fixed (not moved)."""
+        """Pick the max-energy increasing spine per section (the DP), then OVER-
+        RIDE: anchor groups are ALWAYS fixed no matter what the DP decided. The
+        anchors are the ground frame — the street poles you drove into the
+        ground — and the DP is not permitted to vote them into motion. This is
+        the line that kills the bus illusion: a big moved block can no longer
+        crown itself 'stationary' by out-weighing the poles, because the poles
+        don't compete — they're pinned before the contest and re-pinned after."""
         for section in self.sections:
             group_start = self.blocks[section['blockStart']].group
             group_end = self.blocks[section['blockEnd']].group
@@ -823,7 +952,15 @@ class BlockDiffEngine:
 
             for group_idx in max_path:
                 self.groups[group_idx].fixed = True
-                for b in range(self.groups[group_idx].block_start, self.groups[group_idx].block_end + 1):
+                for b in range(self.groups[group_idx].block_start,
+                               self.groups[group_idx].block_end + 1):
+                    self.blocks[b].fixed = True
+
+        # Ground frame override. Poles cannot drift.
+        for group in self.groups:
+            if group.is_anchor:
+                group.fixed = True
+                for b in range(group.block_start, group.block_end + 1):
                     self.blocks[b].fixed = True
 
     def _find_max_path(self, start: int, group_end: int, cache: dict) -> dict:
@@ -920,9 +1057,15 @@ class BlockDiffEngine:
         return return_obj
 
     def _unlink_blocks(self) -> bool:
-        """Converts short, non-unique '=' blocks into '+/-' to prevent fragment noise."""
+        """Convert short non-unique '=' runs into +/- noise. Anchor groups are
+        EXEMPT — a pole is never noise, never eaten, even if it's short. Losing
+        one silently dissolves a file boundary (two files fuse with no error) —
+        the exact silent-wrong failure class this whole effort exists to kill."""
         unlinked = False
         for group in self.groups:
+            if group.is_anchor:
+                continue  # poles are exempt from unlink, unconditionally.
+
             block_start = group.block_start
             block_end = group.block_end
 

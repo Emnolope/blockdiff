@@ -78,42 +78,50 @@ _SEP_RE = re.compile(re.escape(_FENCE) + r"([0-9a-f]{32})" + re.escape(_END))
 def _new_sentinel() -> str:
     return f"{_FENCE}{uuid.uuid4().hex}{_END}"
 
-
 def build_blobs(old_files: Dict[str, str], new_files: Dict[str, str]):
-    """Concatenate files into two blobs. Each file is preceded by a sentinel
-    identical across old and new. As we append left to right we record each
-    sentinel's CHARACTER OFFSET in each blob — the ground truth _file_owning
-    reads. Both blobs open with a sentinel, so nothing ever precedes the first.
+    """Concatenate files into two blobs, each file preceded by a sentinel
+    identical across old and new. Records, per side, each sentinel's CHARACTER
+    OFFSET (for attribution) AND its (start,end) span (for the engine's
+    stationary prelinks — the poles).
 
-    This is stitching. It makes ZERO decisions about content. It only lays out
-    the blob and remembers where it put each fence.
-
-    Returns: old_blob, new_blob, first_file,
-             old_marks, new_marks  (each a sorted list of (char_offset, file))."""
+    Returns:
+        old_blob, new_blob, first_file,
+        old_marks, new_marks,        # each sorted list of (char_offset, file)
+        prelinks                     # list of (old_span, new_span, "stationary")
+                                     # one per file, feeding compute_diff.
+    """
     order = list(dict.fromkeys(list(old_files) + list(new_files)))
     old_parts, new_parts = [], []
     old_marks: List[Tuple[int, str]] = []
     new_marks: List[Tuple[int, str]] = []
+    prelinks: List[Tuple[Tuple[int, int], Tuple[int, int], str]] = []
     old_len = 0
     new_len = 0
 
     for path in order:
         sentinel = _new_sentinel()
+        slen = len(sentinel)
 
-        old_marks.append((old_len, path))           # offset where this sentinel begins
+        old_marks.append((old_len, path))
+        new_marks.append((new_len, path))
+
+        # Each sentinel is a stationary pole: same content, same logical place,
+        # pinned as the ground frame on both sides.
+        prelinks.append(((old_len, old_len + slen),
+                         (new_len, new_len + slen),
+                         "stationary"))
+
         chunk_old = f"{sentinel}\n\n{old_files.get(path, '')}\n\n"
         old_parts.append(chunk_old)
         old_len += len(chunk_old)
 
-        new_marks.append((new_len, path))
         chunk_new = f"{sentinel}\n\n{new_files.get(path, '')}\n\n"
         new_parts.append(chunk_new)
         new_len += len(chunk_new)
 
     first_file = order[0] if order else None
-    # Naturally sorted: we appended in increasing offset order.
-    return "".join(old_parts), "".join(new_parts), first_file, old_marks, new_marks
-
+    return ("".join(old_parts), "".join(new_parts), first_file,
+            old_marks, new_marks, prelinks)
 
 def _file_owning(char_offset: Optional[int], marks: List[Tuple[int, str]],
                  first_file: Optional[str]) -> Optional[str]:
@@ -241,21 +249,18 @@ def classify(blocks: List[EngineBlock],
 
     return removed, added, moved
 
-
 def find_moves(old_files: Dict[str, str],
                new_files: Dict[str, str],
                engine_config: Optional[Dict] = None
                ) -> Tuple[List[ResultBlock], List[ResultBlock], List[MovedBlock]]:
-    """Glue -> diff ONCE -> attribute each block by the engine's verdict.
-
-    The engine does the thinking. engine_config (from CLI flags / MCP overrides,
-    both generated off BlockDiffEngine.TUNABLE_PARAMS) is where ALL tuning goes —
-    block_min_length, the noise floor, char_diff, everything. None of that lives
-    in this file, and it never should."""
-    old_blob, new_blob, first_file, old_marks, new_marks = build_blobs(
-        old_files, new_files)
+    """Glue -> diff ONCE (with the file sentinels pinned as stationary poles)
+    -> attribute each block by the engine's verdict. The engine does the
+    thinking; the sentinels nail the coordinate frame so a whole-body move can
+    no longer crown itself the ground and vanish."""
+    (old_blob, new_blob, first_file, old_marks, new_marks,
+     prelinks) = build_blobs(old_files, new_files)
 
     engine = BlockDiffEngine(**(engine_config or {}))
-    blocks = engine.compute_diff(old_blob, new_blob)
+    blocks = engine.compute_diff(old_blob, new_blob, prelinks=prelinks)
 
     return classify(blocks, old_marks, new_marks, first_file, old_files, new_files)
