@@ -28,3 +28,6 @@ mcp = [
 [project.scripts]
 blockdiff = "blockdiff.cli:main"
 blockdiff-mcp = "blockdiff.mcp_server:run"
+
+[tool.pytest.ini_options]
+addopts = "-v -rA"
