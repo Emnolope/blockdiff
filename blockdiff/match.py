@@ -1,34 +1,48 @@
-# match.py — recover which file each piece of a diff belongs to.
+# match.py — ATTRIBUTION ONLY. This file is STUPID ON PURPOSE.
 #
-# Git reports a cross-file move as a delete in one file plus an insert in
-# another, indistinguishable from loss. To SEE the move, we glue all old files
-# into one blob and all new files into another, then diff ONCE. A cross-file
-# move becomes an in-blob move the engine finds natively.
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │ READ THIS BEFORE YOU CHANGE ANYTHING. TO THE NEXT AI ESPECIALLY.         │
+# │                                                                          │
+# │ The engine (cacycle.py) is the intelligent one. It owns EVERY heuristic, │
+# │ EVERY decision, and it does the ACTUAL MOVING. By the time blocks reach  │
+# │ this file, the engine has ALREADY decided what is a move, what is        │
+# │ stationary, what was added, what was removed. It stamped that verdict on │
+# │ each block as (b.type + b.fixed).                                        │
+# │                                                                          │
+# │ THIS FILE'S ONLY JOB: read that verdict and answer ONE arithmetic        │
+# │ question — "which file does this character offset fall in?" — then slap  │
+# │ that file label onto the engine's verdict. That is attribution. It is    │
+# │ NOT classification. It is NOT judgment. It is NOT deciding move-vs-not.  │
+# │                                                                          │
+# │ If you ever find yourself writing `if src != dst:` to DECIDE whether     │
+# │ something moved — STOP. That is the exact bug this rewrite killed. The   │
+# │ engine already knows. See the tombstone in the '=' branch below.         │
+# │                                                                          │
+# │ If you ever want to add a size gate, a "worth it" check, a min-words, a  │
+# │ noise floor, an energy metric — STOP. That lives in the engine           │
+# │ (block_min_length + _unlink_blocks). Adding it here re-grows the         │
+# │ intelligence we deliberately amputated. The whole point of the blob      │
+# │ architecture is that the engine is smart so this file can be dumb.       │
+# └─────────────────────────────────────────────────────────────────────────┘
 #
-# THE MODEL: one list, ONE COORDINATE SYSTEM (characters), read off each block.
-# ---------------------------------------------------------------------------
-# The engine now speaks characters at its border (old_char / new_char on every
-# block). This file never tokenizes, never searches, never compares content to
-# decide a file. A DiffBlock is ONE object carrying TWO addresses:
+# WHY A BLOB AT ALL: git reports a cross-file move as a delete in file A plus an
+# insert in file B — indistinguishable from loss. To let the engine SEE the
+# move, we glue all old files into one blob and all new files into another,
+# separated by runtime-random sentinels, and diff ONCE. A cross-file move is now
+# an ordinary in-blob move the engine detects natively. After the diff, we look
+# at which sentinel each block sits behind to recover its file. That recovery is
+# ALL this file does.
 #
-#     '='  : both old_char and new_char. If they sit behind DIFFERENT sentinels,
-#            the content flew between files -> MOVE, read off ONE object.
-#     '-'  : only old_char -> removed at its old file.
-#     '+'  : only new_char -> added at its new file.
-#     '|'  : the engine's move ghost. Ignored: the '=' carries its own addresses.
+# THE COORDINATE SYSTEM: characters. The engine stamps old_char / new_char on
+# every block (its position in each blob). File attribution is pure arithmetic
+# on those offsets against the sentinel offsets we ourselves authored in
+# build_blobs. We never tokenize, never search content, never key on text.
 #
-# FILE IDENTITY IS PURE ARITHMETIC: file_owning(char_offset) = the file whose
-# sentinel offset is the greatest one <= char_offset. We OWN every sentinel
-# offset from build_blobs (we laid the blob out ourselves), so there is nothing
-# to discover and nothing to search-as-fishing — it's a direct scan of a tiny
-# per-file list.
-#
-# WHY THIS SURVIVES TWINS: identity is the block's character offset, a distinct
-# integer per block. Two 95%-identical paragraphs — even the SAME paragraph at
-# file A's tail and file B's head across one sentinel — sit at different offsets,
-# so they can never alias. No _homes, no _sole_home, no content key, no "decline
-# on ambiguity." Content is cargo: used only for display and cosmetic line
-# numbers, NEVER to decide file or match sides.
+# WHY THIS SURVIVES TWINS / STRADDLES: identity is the block's character offset,
+# a distinct integer per block. Two near-identical paragraphs — even the SAME
+# paragraph at file A's tail and file B's head across one sentinel — sit at
+# different offsets and can never alias. Content is CARGO: used only for display
+# and cosmetic line numbers, NEVER to decide a file or a match.
 
 import re
 import uuid
@@ -56,7 +70,7 @@ class ResultBlock:
 
 # Private-use fences no real text contains, wrapping 32 random hex. Uniqueness
 # forces the engine to anchor each sentinel as its own token, so its char offset
-# is a clean boundary.
+# is a clean boundary that never fuses with surrounding content.
 _FENCE, _END = "\ue000\ue001\ue002", "\ue003\ue004\ue005"
 _SEP_RE = re.compile(re.escape(_FENCE) + r"([0-9a-f]{32})" + re.escape(_END))
 
@@ -68,8 +82,11 @@ def _new_sentinel() -> str:
 def build_blobs(old_files: Dict[str, str], new_files: Dict[str, str]):
     """Concatenate files into two blobs. Each file is preceded by a sentinel
     identical across old and new. As we append left to right we record each
-    sentinel's CHARACTER OFFSET in each blob — the ground truth file_owning uses.
-    Both blobs open with a sentinel, so nothing ever precedes the first one.
+    sentinel's CHARACTER OFFSET in each blob — the ground truth _file_owning
+    reads. Both blobs open with a sentinel, so nothing ever precedes the first.
+
+    This is stitching. It makes ZERO decisions about content. It only lays out
+    the blob and remembers where it put each fence.
 
     Returns: old_blob, new_blob, first_file,
              old_marks, new_marks  (each a sorted list of (char_offset, file))."""
@@ -100,10 +117,13 @@ def build_blobs(old_files: Dict[str, str], new_files: Dict[str, str]):
 
 def _file_owning(char_offset: Optional[int], marks: List[Tuple[int, str]],
                  first_file: Optional[str]) -> Optional[str]:
-    """The file whose sentinel most recently opened at or before char_offset.
-    None offset means the block has no address on this side (a '-' has no new,
-    a '+' has no old) -> None. Direct scan of a tiny sorted list; not a search
-    for something unknown, a read of positions we authored."""
+    """THE ONLY LEGAL CLEVERNESS IN THIS FILE, and it is not even clever — it is
+    arithmetic. Return the file whose sentinel most recently opened at or before
+    char_offset. This is a READ of positions we authored in build_blobs, not a
+    search for something unknown.
+
+    None offset means the block has no address on this side (a '-' has no new
+    address, a '+' has no old) -> None owner. That is correct and expected."""
     if char_offset is None or not marks:
         return None
     owner = first_file
@@ -122,7 +142,8 @@ def _clean(text: str) -> str:
 
 def _line_of(content: str, fragment: str) -> int:
     """Cosmetic line number of a fragment inside its file, or -1 if absent.
-    A first-match find is fine here: this is display, never identity."""
+    A first-match find is fine: this is display, never identity. Returns -1
+    honestly rather than lying with a plausible-but-wrong number."""
     if not fragment:
         return -1
     idx = content.find(fragment)
@@ -136,14 +157,17 @@ def classify(blocks: List[EngineBlock],
              first_file: Optional[str],
              old_files: Dict[str, str], new_files: Dict[str, str]
              ) -> Tuple[List[ResultBlock], List[ResultBlock], List[MovedBlock]]:
-    """One pass over the engine's ONE block list. Each block is read for its two
-    character addresses; the sentinel below each names the file. No pairing, no
-    second list, no content key.
+    """Read the engine's verdict off each block; attach a file label. NO
+    DECISIONS. The engine already decided (b.type + b.fixed); we translate its
+    verdict into per-file rows.
 
-        '-'          -> removed at old file
-        '+'          -> added   at new file
-        '=' same file -> stationary (emit nothing)
-        '=' diff file -> MOVED old file -> new file (entanglement off ONE block)
+    Engine verdict -> what we do (attribution only):
+        '-'                 -> removed, filed at its old-side sentinel
+        '+'                 -> added,   filed at its new-side sentinel
+        '=' with fixed=True -> stationary spine: the engine decided it did NOT
+                               move. We emit NOTHING. Not our call to overrule.
+        '=' with fixed=False-> the engine decided this run is a MOVED group.
+                               We emit a move and LABEL both ends by sentinel.
     """
     removed: List[ResultBlock] = []
     added: List[ResultBlock] = []
@@ -158,25 +182,62 @@ def classify(blocks: List[EngineBlock],
             continue
 
         if b.type == '-':
+            # Engine verdict: removed. Attribute to its old-side file.
             src = _file_owning(b.old_char, old_marks, first_file)
             if src is not None:
                 removed.append(ResultBlock(
                     src, _line_of(old_files.get(src, ""), content), content))
 
         elif b.type == '+':
+            # Engine verdict: added. Attribute to its new-side file.
             dst = _file_owning(b.new_char, new_marks, first_file)
             if dst is not None:
                 added.append(ResultBlock(
                     dst, _line_of(new_files.get(dst, ""), content), content))
 
         elif b.type == '=':
+            # ───────────────────────── TOMBSTONE ─────────────────────────
+            # The OLD code did this here:
+            #
+            #     src = _file_owning(b.old_char, ...)
+            #     dst = _file_owning(b.new_char, ...)
+            #     if src is not None and dst is not None and src != dst:
+            #         moved.append(...)
+            #     # src == dst -> emit nothing
+            #
+            # That `src != dst` was match.py DECIDING what moved — a judgment
+            # that belongs to the engine, re-derived here from the sentinel
+            # layout. It was WRONG two ways:
+            #   1. It took a hard dependency on the blob/sentinel trick. In
+            #      --files mode (one file pair, effectively one blob-pair with
+            #      one sentinel each side) src can never != dst, so real
+            #      within-blob moves the engine found were silently dropped.
+            #   2. It ignored the verdict the engine ALREADY stamped (b.fixed),
+            #      reinventing move-detection out of file comparison instead of
+            #      reading the answer sitting on the block.
+            #
+            # THE FIX: read b.fixed. The engine's _set_fixed / _insert_marks
+            # machinery already decided whether this '=' run is stationary spine
+            # (fixed=True) or a relocated group (fixed=False). We obey it. We do
+            # NOT compare src and dst to decide anything. We compare nothing.
+            # DO NOT RESURRECT `src != dst` AS A DECISION. Ever.
+            # ──────────────────────────────────────────────────────────────
+            if b.fixed:
+                continue  # engine says stationary spine -> not a move -> emit nothing
+
+            # engine says fixed=False -> this run MOVED. We only LABEL its ends.
+            # No size gate, no "worth it" check, no straddle special-casing.
+            # If a moved group straddles a sentinel and one end is a single
+            # word, we DO NOT CARE — that is an edge case and the engine's
+            # noise floor (block_min_length + _unlink_blocks) already governs
+            # what counts as a real run. Adding a threshold here re-grows the
+            # intelligence we amputated. Don't.
             src = _file_owning(b.old_char, old_marks, first_file)
             dst = _file_owning(b.new_char, new_marks, first_file)
-            if src is not None and dst is not None and src != dst:
+            if src is not None and dst is not None:
                 moved.append(MovedBlock(
                     src, _line_of(old_files.get(src, ""), content),
                     dst, _line_of(new_files.get(dst, ""), content), content))
-            # src == dst -> stationary -> emit nothing
 
     return removed, added, moved
 
@@ -185,7 +246,12 @@ def find_moves(old_files: Dict[str, str],
                new_files: Dict[str, str],
                engine_config: Optional[Dict] = None
                ) -> Tuple[List[ResultBlock], List[ResultBlock], List[MovedBlock]]:
-    """Glue -> diff once -> classify each block by its two character addresses."""
+    """Glue -> diff ONCE -> attribute each block by the engine's verdict.
+
+    The engine does the thinking. engine_config (from CLI flags / MCP overrides,
+    both generated off BlockDiffEngine.TUNABLE_PARAMS) is where ALL tuning goes —
+    block_min_length, the noise floor, char_diff, everything. None of that lives
+    in this file, and it never should."""
     old_blob, new_blob, first_file, old_marks, new_marks = build_blobs(
         old_files, new_files)
 

@@ -126,3 +126,50 @@ def test_line_of_reports_minus_one_not_a_lie():
     assert _line_of(content, "line two") == 2
     assert _line_of(content, "line one") == 1
     assert _line_of(content, "nonexistent fragment") == -1
+
+def test_sentinels_are_the_fixed_spine_after_a_big_move():
+    """The street-pole test. A big body moves between files. The sentinels are
+    stationary BY CONSTRUCTION. After the engine runs, EVERY sentinel-bearing
+    block must be fixed=True — the frame must not drift. If a sentinel comes back
+    fixed=False (or absorbed/unlinked), the coordinate frame moved, which is the
+    car-lurching-backward hallucination and the root of the whole-body-move bug."""
+    body = ("first canonical statement of the thesis here\n"
+            "third sentence with the crucial caveat that changes everything\n"
+            "fifth sentence gesturing vaguely at all the future work")
+    old = {"draft.md": f"# title\n\n{body}", "final.md": "# final\n\nplaceholder"}
+    new = {"draft.md": "# title\n\n(moved to final)",
+           "final.md": f"# final\n\nplaceholder\n\n{body}"}
+
+    old_blob, new_blob, first, old_marks, new_marks = build_blobs(old, new)
+    blocks = BlockDiffEngine().compute_diff(old_blob, new_blob)
+
+    # Find every engine block whose text still carries a sentinel.
+    sentinel_blocks = [b for b in blocks if _SEP_RE.search(b.text or "")]
+    assert sentinel_blocks, "sentinels were absorbed/unlinked — frame dissolved"
+    for b in sentinel_blocks:
+        assert b.type == '=', f"a sentinel came back as {b.type!r}, not stationary"
+        assert b.fixed is True, \
+            f"sentinel drifted: fixed={b.fixed!r} — the frame moved (bus illusion)"
+
+def test_anchor_stands_as_its_own_group():
+    """Follow-up to the street-pole failure. The diagnostic showed the sentinel
+    came back FUSED into a group with trailing content ('# final\\n\\nplaceholder').
+    Confirm that structurally: no engine block that carries a sentinel may also
+    carry non-sentinel payload. If this fails, the fix is in _get_groups (anchors
+    must break the group chain). If it PASSES, the pole is standalone and the bug
+    is purely in _find_max_path scoring — a different, smaller fix."""
+    body = ("first canonical statement of the thesis here\n"
+            "third sentence with the crucial caveat that changes everything\n"
+            "fifth sentence gesturing vaguely at all the future work")
+    old = {"draft.md": f"# title\n\n{body}", "final.md": "# final\n\nplaceholder"}
+    new = {"draft.md": "# title\n\n(moved to final)",
+           "final.md": f"# final\n\nplaceholder\n\n{body}"}
+
+    old_blob, new_blob, first, old_marks, new_marks = build_blobs(old, new)
+    blocks = BlockDiffEngine().compute_diff(old_blob, new_blob)
+
+    for b in blocks:
+        if _SEP_RE.search(b.text or ""):
+            stripped = _SEP_RE.sub("", b.text).strip()
+            assert stripped == "", (
+                f"anchor FUSED with payload {stripped!r} — fix goes in _get_groups")
