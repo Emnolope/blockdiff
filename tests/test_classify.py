@@ -150,3 +150,24 @@ def test_move_and_genuine_deletion_in_one_commit_do_not_smear():
 def test_empty_input_is_empty_output():
     removed, added, moved = find_moves({}, {})
     assert removed == [] and added == [] and moved == []
+
+def test_whole_body_relocation_when_source_file_survives():
+    """A file's whole body moves out while the file survives (emptied to a
+    stub). Rename detection can't fire — draft.md still exists — so only a
+    content-level move catches it. Ported from the retired test_spec.py; the
+    one intent that file had which nothing else covered."""
+    body = ("first canonical statement of the thesis here\n"
+            "third sentence with the crucial caveat that changes everything\n"
+            "fifth sentence gesturing vaguely at all the future work")
+    old = {"draft.md": f"# title\n\n{body}",
+           "final.md": "# final\n\nplaceholder"}
+    new = {"draft.md": "# title\n\n(moved to final)",
+           "final.md": f"# final\n\nplaceholder\n\n{body}"}
+
+    removed, added, moved = find_moves(old, new)
+
+    assert any("crucial caveat" in m.content and m.source_file == "draft.md"
+               and m.target_file == "final.md" for m in moved), \
+        "whole-body relocation missed"
+    assert not any("crucial caveat" in r.content for r in removed), \
+        "relocated body double-counted into removed"
