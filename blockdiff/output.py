@@ -2,16 +2,27 @@ import json
 from typing import List
 from rich.console import Console
 from rich.panel import Panel
-from rich.markup import escape
+from rich.text import Text
+from rich.rule import Rule
 
 from .parse import RenamedFile
 from .match import MovedBlock, ResultBlock
 
 
+# ── palette ───────────────────────────────────────────────────────────────
+# One place to fiddle colors. Change these, restyle the whole tool.
+C_RENAME = "cyan"
+C_MOVE   = "yellow"
+C_DEL    = "red"
+C_ADD    = "green"
+C_GUTTER = "grey42"      # line-number gutter, dim so content leads
+C_ARROW  = "bright_white"
+
+
 def _payload(removed: List[ResultBlock], added: List[ResultBlock],
              moved: List[MovedBlock], renamed: List[RenamedFile] = None) -> dict:
-    """Single source of truth for the structured output. CLI --json and the
-    MCP server both serialize THIS. Keeps clanker-human parity honest."""
+    """Single source of truth for structured output. CLI --json and the MCP
+    server both serialize THIS. Untouched — cosmetics never touch the data."""
     renamed = renamed or []
     return {
         "renamed": [{"old_path": r.old_path, "new_path": r.new_path, "similarity": r.similarity}
@@ -28,45 +39,91 @@ def _payload(removed: List[ResultBlock], added: List[ResultBlock],
     }
 
 
+def _section(console: Console, title: str, style: str, count: int):
+    """A titled rule instead of a boxed panel — reads cleaner, wastes no width."""
+    console.print()
+    console.print(Rule(f"[{style} bold]{title}[/]  [dim]({count})[/]",
+                       style=style, align="left"))
+
+
+def _body(console: Console, content: str, style: str, gutter_start: int):
+    """Print a content block: every physical line gets a dim line-number gutter
+    and the content itself, with markup DISABLED so brackets/backslashes in code
+    render literally instead of being parsed as rich tags (the purple bug)."""
+    lines = content.split("\n")
+    for i, line in enumerate(lines):
+        n = gutter_start + i if gutter_start >= 0 else None
+        gutter = f"{n:>5} " if n is not None else "    · "
+        t = Text()
+        t.append(gutter, style=C_GUTTER)
+        # THE fix: markup=False lives on Text.append via no-parse; we build Text
+        # explicitly so nothing is ever interpreted as a style tag.
+        t.append(line, style=style)
+        console.print(t)
+
+
 def render_diff(removed: List[ResultBlock], added: List[ResultBlock],
                 moved: List[MovedBlock], renamed: List[RenamedFile] = None):
     renamed = renamed or []
     console = Console()
 
     if renamed:
-        console.print(Panel("RENAMED FILES", style="cyan bold"))
+        _section(console, "RENAMED FILES", C_RENAME, len(renamed))
         for r in renamed:
-            console.print(escape(f"RENAMED: {r.old_path} -> {r.new_path} ({r.similarity}%)"),
-                          style="cyan bold")
-        console.print()
+            t = Text()
+            t.append("  rename  ", style=f"{C_RENAME} bold")
+            t.append(r.old_path, style=C_RENAME)
+            t.append("  →  ", style=C_ARROW)
+            t.append(r.new_path, style=C_RENAME)
+            t.append(f"  ({r.similarity}%)", style="dim")
+            console.print(t)
 
     if moved:
-        console.print(Panel("MOVED BLOCKS", style="yellow bold"))
+        _section(console, "MOVED BLOCKS", C_MOVE, len(moved))
         for m in moved:
-            console.print(escape(f"FROM: {m.source_file}:{m.source_line} -> "
-                                 f"TO: {m.target_file}:{m.target_line}"), style="yellow bold")
-            for line in m.content.split('\n'):
-                console.print(f"~ {escape(line)}", style="yellow")
+            head = Text()
+            head.append("  ", style="")
+            head.append(f"{m.source_file}:{m.source_line}", style=f"{C_MOVE}")
+            head.append("  →  ", style=C_ARROW)
+            head.append(f"{m.target_file}:{m.target_line}", style=f"{C_MOVE} bold")
+            console.print(head)
+            _body(console, m.content, C_MOVE, m.target_line)
             console.print()
 
     if removed:
-        console.print(Panel("REMOVED BLOCKS (No cross-file match)", style="red bold"))
+        _section(console, "REMOVED  (no cross-file match)", C_DEL, len(removed))
         for rem in removed:
-            console.print(escape(f"--- {rem.file_path}:{rem.start_line}"), style="red bold")
-            for line in rem.content.split('\n'):
-                console.print(escape(line), style="red")
+            head = Text()
+            head.append("  − ", style=f"{C_DEL} bold")
+            head.append(f"{rem.file_path}:{rem.start_line}", style=f"{C_DEL} bold")
+            console.print(head)
+            _body(console, rem.content, C_DEL, rem.start_line)
             console.print()
 
     if added:
-        console.print(Panel("ADDED BLOCKS (No cross-file match)", style="green bold"))
+        _section(console, "ADDED  (no cross-file match)", C_ADD, len(added))
         for add in added:
-            console.print(escape(f"+++ {add.file_path}:{add.start_line}"), style="green bold")
-            for line in add.content.split('\n'):
-                console.print(escape(line), style="green")
+            head = Text()
+            head.append("  + ", style=f"{C_ADD} bold")
+            head.append(f"{add.file_path}:{add.start_line}", style=f"{C_ADD} bold")
+            console.print(head)
+            _body(console, add.content, C_ADD, add.start_line)
             console.print()
 
     if not (renamed or moved or removed or added):
         console.print("No significant block changes detected.", style="dim")
+    else:
+        console.print()
+        console.print(Rule(style="grey30"))
+        summary = Text()
+        summary.append(f"  {len(renamed)} renamed", style=C_RENAME)
+        summary.append("   ")
+        summary.append(f"{len(moved)} moved", style=C_MOVE)
+        summary.append("   ")
+        summary.append(f"{len(removed)} removed", style=C_DEL)
+        summary.append("   ")
+        summary.append(f"{len(added)} added", style=C_ADD)
+        console.print(summary)
 
 
 def render_json(removed: List[ResultBlock], added: List[ResultBlock],
