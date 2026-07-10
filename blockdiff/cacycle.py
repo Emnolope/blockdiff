@@ -30,6 +30,7 @@ class TokenInfo:
     link: Optional[int] = None
     number: Optional[int] = None
     unique: bool = False
+    char_offset: Optional[int] = None  # char index in the blob where this token starts
 
 
 @dataclass
@@ -48,7 +49,13 @@ class DiffBlock:
     group: Optional[int] = None
     fixed: Optional[bool] = None
     moved_to_group: Optional[int] = None  # If type=='|', the group index it moved to
-    
+
+    # Character-space position in the blob. THE sane coordinate match.py reads.
+    # '-' has only old_char, '+' has only new_char, '=' has both, '|' has old_char.
+    # Intrinsic to content; never overwritten by positioning or sorting.
+    old_char: Optional[int] = None
+    new_char: Optional[int] = None
+
     # Internal array indices for O(1) lookups (parity with original JS heuristics)
     old_block_idx: Optional[int] = None
     new_block_idx: Optional[int] = None
@@ -220,12 +227,19 @@ class DiffText:
             i = self.tokens[i].next
 
     def enumerate_tokens(self):
-        """Assigns sequential index numbers to the final resulting tokens for mapping."""
+        """Assigns sequential index numbers AND character offsets to the final
+        tokens. char_offset is a running sum of token lengths in stream order,
+        so it equals the token's exact character position in the concatenated
+        blob — the same order every block-builder concatenates text in, so the
+        two can never drift."""
         number = 0
+        offset = 0
         i = self.first
         while i is not None:
             self.tokens[i].number = number
+            self.tokens[i].char_offset = offset
             number += 1
+            offset += len(self.tokens[i].token)
             i = self.tokens[i].next
 
 
@@ -717,6 +731,8 @@ class BlockDiffEngine:
                     unique=unique,
                     words=len(list(RE_COUNT_WORDS.finditer(text))),
                     chars=len(text),
+                    old_char=self.old_text.tokens[j_start].char_offset,   # NEW
+                    new_char=self.new_text.tokens[i_start].char_offset,   # NEW
                     old_block_idx=len(self.blocks)  # Crucial for group checking parity
                 ))
         
@@ -958,9 +974,9 @@ class BlockDiffEngine:
                     old_number=self.old_text.tokens[old_start].number,
                     old_start_token=old_start,
                     count=count,
-                    chars=len(text)
-                ))
-            
+                    chars=len(text),
+                    old_char=self.old_text.tokens[old_start].char_offset,  # NEW
+                ))            
             if j is not None:
                 i = self.old_text.tokens[j].link
                 while i is not None and j is not None and self.old_text.tokens[j].link == i:
@@ -1036,7 +1052,8 @@ class BlockDiffEngine:
                     text=text,
                     new_number=self.new_text.tokens[i_start].number,
                     count=count,
-                    chars=len(text)
+                    chars=len(text),
+                    new_char=self.new_text.tokens[i_start].char_offset,  # NEW
                 ))
         self._sort_blocks()
 
@@ -1132,6 +1149,12 @@ class BlockDiffEngine:
                 new_number = ref_block.new_number
                 mark_group = ref_block.group
 
+            moved_start_block = self.blocks[moved_group.block_start]
+            marker_old_char = None
+            if moved_start_block.old_start_token is not None:
+                marker_old_char = self.old_text.tokens[
+                    moved_start_block.old_start_token].char_offset
+
             self.blocks.append(DiffBlock(
                 type='|',
                 text='',
@@ -1140,7 +1163,8 @@ class BlockDiffEngine:
                 chars=0,
                 group=mark_group,
                 fixed=True,
-                moved_to_group=moved_idx
+                moved_to_group=moved_idx,
+                old_char=marker_old_char,  # NEW: origin position of the moved run
             ))
 
             moved_group.color_id = color
