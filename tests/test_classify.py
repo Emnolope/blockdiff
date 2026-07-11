@@ -171,3 +171,62 @@ def test_whole_body_relocation_when_source_file_survives():
         "whole-body relocation missed"
     assert not any("crucial caveat" in r.content for r in removed), \
         "relocated body double-counted into removed"
+
+def test_cross_file_move_reported_even_when_engine_marks_it_fixed():
+    """REGRESSION LOCK — the tombstoned bug, nailed shut on purpose.
+
+    The engine's `fixed` flag marks the stationary ENERGY FRAME (the
+    max-keystroke-saving spine), NOT file-stationarity. A block can sit ON that
+    spine (fixed=True) and STILL have its two ends behind different sentinels —
+    i.e. it changed files. The witness scaffold MEASURED exactly this: a mover
+    with fixed=True, old end in a.md, new end in b.md.
+
+    A prior classify() keyed the '=' branch on b.fixed and dropped every such
+    move into the void — not moved, not removed, not added. Content vanished
+    with no error. This test drives the real engine, asserts the move IS
+    reported, AND asserts the premise (the mover really does come back fixed=True
+    at engine level) so that if some future change makes the engine flip it to
+    fixed=False, this test's premise-check fires and tells us the world changed
+    underneath us rather than silently passing for the wrong reason.
+
+    If this ever fails, someone re-added a `if b.fixed: continue` gate to the
+    '=' branch of classify(). Do not. The sentinel crossing is the move signal.
+    """
+    from blockdiff.match import build_blobs, _file_owning, classify
+    from blockdiff.cacycle import BlockDiffEngine
+
+    line = "the singular quorum sensing anchor line stands entirely alone here"
+    old = {"a.md": f"alpha head\n\n{line}\n\nalpha tail",
+           "b.md": "beta head\n\nbeta body"}
+    new = {"a.md": "alpha head\n\nalpha tail",
+           "b.md": f"beta head\n\nbeta body\n\n{line}"}
+
+    # --- premise check: the engine really does crown this mover fixed=True ---
+    old_blob, new_blob, first, old_marks, new_marks, prelinks = build_blobs(old, new)
+    blocks = BlockDiffEngine().compute_diff(old_blob, new_blob, prelinks=prelinks)
+    mover = next((b for b in blocks
+                  if b.type == '=' and "quorum sensing" in (b.text or "")), None)
+    assert mover is not None, \
+        "premise gone: no single '=' block carries the moved line anymore"
+    src = _file_owning(mover.old_char, old_marks, first)
+    dst = _file_owning(mover.new_char, new_marks, first)
+    assert src == "a.md" and dst == "b.md", \
+        f"premise gone: mover no longer crosses a.md->b.md (src={src} dst={dst})"
+    assert mover.fixed is True, (
+        "PREMISE CHANGED: the engine no longer marks this mover fixed=True. "
+        "The regression this test guards may now be unreachable via this fixture "
+        "— re-derive a fixture that reproduces a fixed=True file-crosser, or the "
+        "guard has gone slack.")
+
+    # --- the actual guarantee: fixed=True notwithstanding, it IS a move ---
+    removed, added, moved = classify(
+        blocks, old_marks, new_marks, first, old, new)
+
+    assert any("quorum sensing" in m.content
+               and m.source_file == "a.md" and m.target_file == "b.md"
+               for m in moved), \
+        "fixed=True mover was dropped — someone re-added a b.fixed gate to classify"
+    assert not any("quorum sensing" in r.content for r in removed), \
+        "fixed=True mover leaked into removed (double-count)"
+    assert not any("quorum sensing" in a.content for a in added), \
+        "fixed=True mover leaked into added (double-count)"

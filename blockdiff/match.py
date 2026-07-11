@@ -159,23 +159,25 @@ def _line_of(content: str, fragment: str) -> int:
         idx = content.find(fragment.strip())
     return content.count('\n', 0, idx) + 1 if idx != -1 else -1
 
-
 def classify(blocks: List[EngineBlock],
              old_marks: List[Tuple[int, str]], new_marks: List[Tuple[int, str]],
              first_file: Optional[str],
              old_files: Dict[str, str], new_files: Dict[str, str]
              ) -> Tuple[List[ResultBlock], List[ResultBlock], List[MovedBlock]]:
-    """Read the engine's verdict off each block; attach a file label. NO
-    DECISIONS. The engine already decided (b.type + b.fixed); we translate its
-    verdict into per-file rows.
+    """Attribution by SENTINEL CROSSING. The engine decides what content is the
+    same run; the sentinels decide which FILE each end sits in. Those are two
+    different questions and this function only answers the second.
 
-    Engine verdict -> what we do (attribution only):
-        '-'                 -> removed, filed at its old-side sentinel
-        '+'                 -> added,   filed at its new-side sentinel
-        '=' with fixed=True -> stationary spine: the engine decided it did NOT
-                               move. We emit NOTHING. Not our call to overrule.
-        '=' with fixed=False-> the engine decided this run is a MOVED group.
-                               We emit a move and LABEL both ends by sentinel.
+    History correction (read the tombstone below): a prior version keyed the '='
+    branch on b.fixed, believing fixed=True meant 'did not move'. The witness
+    disproved that — the engine stamped fixed=True on a block that demonstrably
+    changed files, because `fixed` marks the stationary ENERGY FRAME (the
+    max-keystroke-saving spine), NOT file-stationarity. A block can be on the
+    spine and STILL sit behind a different sentinel on each side. So we attribute
+    by file crossing (src != dst), which is precisely what the sentinels exist
+    to reveal. This is NOT re-deriving move detection — the engine already
+    proved the run is the same content; we only read which files its two ends
+    land in.
     """
     removed: List[ResultBlock] = []
     added: List[ResultBlock] = []
@@ -190,62 +192,47 @@ def classify(blocks: List[EngineBlock],
             continue
 
         if b.type == '-':
-            # Engine verdict: removed. Attribute to its old-side file.
             src = _file_owning(b.old_char, old_marks, first_file)
             if src is not None:
                 removed.append(ResultBlock(
                     src, _line_of(old_files.get(src, ""), content), content))
 
         elif b.type == '+':
-            # Engine verdict: added. Attribute to its new-side file.
             dst = _file_owning(b.new_char, new_marks, first_file)
             if dst is not None:
                 added.append(ResultBlock(
                     dst, _line_of(new_files.get(dst, ""), content), content))
 
         elif b.type == '=':
-            # ───────────────────────── TOMBSTONE ─────────────────────────
-            # The OLD code did this here:
+            # ───────────────────────── TOMBSTONE (REVISED) ─────────────────
+            # The ORIGINAL tombstone forbade `src != dst`, believing b.fixed
+            # carried the move verdict. The witness (test_witness.py) MEASURED
+            # fixed=True on a block whose old end sat behind a.md's sentinel and
+            # whose new end sat behind b.md's — a real cross-file move the engine
+            # had frozen onto its stationary spine. Keying on fixed dropped it
+            # into the void: not moved, not removed, not added. Content vanished.
             #
-            #     src = _file_owning(b.old_char, ...)
-            #     dst = _file_owning(b.new_char, ...)
-            #     if src is not None and dst is not None and src != dst:
-            #         moved.append(...)
-            #     # src == dst -> emit nothing
+            # So `src != dst` is RESURRECTED, deliberately, because the sentinel
+            # crossing is the ONLY signal that honestly answers "did this change
+            # files." It does not decide same-vs-different content — the engine
+            # already did that by emitting this as one '=' run. We only label the
+            # two ends. `fixed` is IGNORED here on purpose: it answers a
+            # different question (energy frame), not ours (file attribution).
             #
-            # That `src != dst` was match.py DECIDING what moved — a judgment
-            # that belongs to the engine, re-derived here from the sentinel
-            # layout. It was WRONG two ways:
-            #   1. It took a hard dependency on the blob/sentinel trick. In
-            #      --files mode (one file pair, effectively one blob-pair with
-            #      one sentinel each side) src can never != dst, so real
-            #      within-blob moves the engine found were silently dropped.
-            #   2. It ignored the verdict the engine ALREADY stamped (b.fixed),
-            #      reinventing move-detection out of file comparison instead of
-            #      reading the answer sitting on the block.
-            #
-            # THE FIX: read b.fixed. The engine's _set_fixed / _insert_marks
-            # machinery already decided whether this '=' run is stationary spine
-            # (fixed=True) or a relocated group (fixed=False). We obey it. We do
-            # NOT compare src and dst to decide anything. We compare nothing.
-            # DO NOT RESURRECT `src != dst` AS A DECISION. Ever.
-            # ──────────────────────────────────────────────────────────────
-            if b.fixed:
-                continue  # engine says stationary spine -> not a move -> emit nothing
-
-            # engine says fixed=False -> this run MOVED. We only LABEL its ends.
-            # No size gate, no "worth it" check, no straddle special-casing.
-            # If a moved group straddles a sentinel and one end is a single
-            # word, we DO NOT CARE — that is an edge case and the engine's
-            # noise floor (block_min_length + _unlink_blocks) already governs
-            # what counts as a real run. Adding a threshold here re-grows the
-            # intelligence we amputated. Don't.
+            # KNOWN LIMIT (unchanged, still true): in --files single-pair mode
+            # there is one sentinel per side, so src always == dst and a
+            # within-file reorder won't surface. That's a single-pair limitation,
+            # not a regression; the multi-file blob path (the real use case)
+            # attributes correctly.
+            # DO NOT re-add a b.fixed gate here. The witness settled it.
+            # ────────────────────────────────────────────────────────────────
             src = _file_owning(b.old_char, old_marks, first_file)
             dst = _file_owning(b.new_char, new_marks, first_file)
-            if src is not None and dst is not None:
+            if src is not None and dst is not None and src != dst:
                 moved.append(MovedBlock(
                     src, _line_of(old_files.get(src, ""), content),
                     dst, _line_of(new_files.get(dst, ""), content), content))
+            # src == dst -> stationary within one file -> emit nothing
 
     return removed, added, moved
 

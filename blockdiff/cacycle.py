@@ -63,7 +63,6 @@ class DiffBlock:
     is_anchor: bool = False        # stationary ground frame (do not move it)
     is_prelink_moved: bool = False # caller-asserted move (do not re-litigate it)
 
-
 @dataclass
 class DiffGroup:
     old_number: int
@@ -76,7 +75,8 @@ class DiffGroup:
     fixed: bool
     moved_from_group: Optional[int] = None
     color_id: Optional[int] = None
-    is_anchor: bool = False        # NEW: singleton ground-frame group
+    is_anchor: bool = False          # singleton ground-frame group
+    new_number: Optional[int] = None # new-order pos of first block (for spine DP)
 
 # --- Regex Setup ---
 def _parse_unicode_ranges(s: str) -> str:
@@ -877,9 +877,10 @@ class BlockDiffEngine:
 
     def _get_groups(self):
         """Chain contiguous '=' blocks into groups. An anchor block NEVER chains
-        with a non-anchor (it's a singleton ground-frame group, born fixed). A
-        prelink-moved block never chains with content either, so a caller's
-        asserted move stays its own group and can be reported as one clean move."""
+        with a non-anchor (singleton ground-frame group, born fixed). A
+        prelink-moved block never chains with content either. Each group also
+        records the new_number of its first block so _find_max_path can enforce
+        BOTH-orders monotonicity when choosing the stationary spine."""
         self.groups.clear()
         b_idx = 0
         while b_idx < len(self.blocks):
@@ -894,7 +895,6 @@ class BlockDiffEngine:
             for i in range(g_end + 1, len(self.blocks)):
                 if self.blocks[i].old_block_idx != old_block + 1:
                     break
-                # Never chain across a pin boundary (anchor or prelink-moved).
                 if self.blocks[i].is_anchor != group_is_anchor:
                     break
                 if self.blocks[i].is_prelink_moved != group_is_moved:
@@ -908,8 +908,6 @@ class BlockDiffEngine:
                 g_end = i
 
             if g_end >= g_start:
-                # Anchor groups are born fixed (ground frame). Everything else
-                # keeps the original rule: fixed iff it isn't in a moving section.
                 if group_is_anchor:
                     fixed = True
                 else:
@@ -923,6 +921,9 @@ class BlockDiffEngine:
                     unique=unique, max_words=max_words,
                     words=words, chars=chars, fixed=fixed)
                 grp.is_anchor = group_is_anchor
+                # Record new-order position of the group's first block so the
+                # spine DP can require monotonicity in new_number as well.
+                grp.new_number = self.blocks[g_start].new_number
                 self.groups.append(grp)
                 self.max_words = max(self.max_words, max_words)
                 b_idx = g_end
@@ -965,47 +966,37 @@ class BlockDiffEngine:
 
     def _find_max_path(self, start: int, group_end: int, cache: dict) -> dict:
         # ================================================================
-        # KEYSTROKE-ENERGY METRIC.
+        # A stationary spine must be monotonically increasing in BOTH
+        # old_number AND new_number. That is the literal definition of "these
+        # groups did not reorder relative to each other" — the only thing that
+        # can honestly be called a stationary frame.
         #
-        # Plain English (read this at 2 a.m. and still get it):
-        #   - A character that sits still, unmoved and unedited, is FREE.
-        #   - The "spine" is the set of groups we choose to leave sitting still.
-        #   - Every group NOT on the spine has to be moved -> it costs one
-        #     cut-paste: a flat move_base (~4 keys for Ctrl-X/Ctrl-V) plus a
-        #     little more for how much you had to select. Selecting scales
-        #     SUB-linearly (a book isn't much harder to select than a
-        #     paragraph), so the "little more" is move_log_k * log(1 + size).
-        #   - DISTANCE IS NOT IN THIS METRIC. Moving across files costs the
-        #     same as nudging one line, so displacement never appears. It is
-        #     also not even available in scope here, so this is not a choice
-        #     we can revisit later without plumbing new data. Leave it out.
+        # THE BUG THIS FIXES: the old loop gated candidates on old_number alone.
+        # That let the DP build a chain increasing in old-order but ZIG-ZAGGING
+        # in new-order, then fix every group on it. A block that comes later in
+        # old-order but EARLIER in new-order has demonstrably reordered against
+        # `start`; it cannot share a stationary frame with it. Without the
+        # new_number guard the DP crowned such a chain and froze a genuine mover
+        # as if it stood still (the quorum-line evaporation the witness caught).
         #
-        # So the value of putting a group ON the spine (keeping it still) is:
-        #       w_char * chars                       (the free chars we keep)
-        #   minus the move it would have cost anyway  (we no longer pay it)
-        #     ... but we fold that in by scoring each spine group as its
-        #     stationary reward, and letting off-spine groups simply not
-        #     contribute. Maximizing kept-reward == minimizing total moves,
-        #     because every group is either kept (rewarded) or moved (not).
+        # CACHE SOUNDNESS (do not "simplify" this away): the cache is keyed on
+        # `i` alone, yet the guard is caller-relative. It stays sound by
+        # TRANSITIVITY of monotonicity: every group inside cache[i]['path'] has
+        # new_number >= new_number(i) by induction, and we only attach i when
+        # new_number(i) >= new_number(start), so the whole attached chain is
+        # >= new_number(start). No context leaks across cache hits.
         #
-        # We maximize:  sum over spine groups of  spine_value(group)
-        #   where spine_value = w_char*chars  -  (move_base + move_log_k*log(1+chars))
-        #   i.e. "how many keystrokes keeping this group stationary SAVES us
-        #   versus having to cut-paste it." A group only helps the spine if
-        #   that saving is positive; tiny groups (a lone word) can go
-        #   negative, which correctly means 'don't bother anchoring it'.
-        #
-        # APPROXIMATION NOTE (do not "fix" this thinking it's a bug):
-        #   log is concave, so merging two moves into one big move is actually
-        #   cheaper than this additive DP assumes. That makes this spine choice
-        #   NEAR-optimal, not provably optimal. We keep the fast DP on purpose.
+        # KEYSTROKE-ENERGY METRIC (unchanged, still the only scoring):
+        #   spine_value(size) = w_char*size - (move_base + move_log_k*ln(1+size))
+        #   = keystrokes SAVED by leaving this group stationary vs cut-pasting it.
+        #   Distance is deliberately absent (not in scope, moves cost the same
+        #   near or far). log is concave so merged moves are cheaper than this
+        #   additive DP assumes -> near-optimal, not provably optimal, on purpose.
         # ================================================================
         #
         # ----- OLD METRIC (raw character count). DO NOT DELETE. -----
-        # Kept for reference and easy A/B. A future AI WILL try to delete this
-        # as "dead code" — it is not dead, it is the baseline the new metric
-        # replaces. If the keystroke metric ever misbehaves, this is the
-        # fallback. Leave it commented, leave this warning attached.
+        # Baseline for A/B, not dead code. If the keystroke metric misbehaves,
+        # this is the fallback. Leave it commented, leave this warning attached.
         #
         #   max_chars = 0
         #   old_number = self.groups[start].old_number
@@ -1029,12 +1020,15 @@ class BlockDiffEngine:
 
         max_score = 0.0
         old_number = self.groups[start].old_number
+        new_number = self.groups[start].new_number
         return_obj = {'path': [], 'chars': 0.0}
 
         for i in range(start + 1, group_end + 1):
-            if self.groups[i].old_number < old_number:
+            # Both orderings must increase, or it is not a stationary spine.
+            if self.groups[i].old_number is None or self.groups[i].old_number < old_number:
                 continue
-
+            if self.groups[i].new_number is None or new_number is None or self.groups[i].new_number < new_number:
+                continue
             if i in cache:
                 path_obj = {'path': cache[i]['path'][:], 'chars': cache[i]['chars']}
             else:
@@ -1046,8 +1040,8 @@ class BlockDiffEngine:
 
         return_obj['path'].insert(0, start)
         # spine_value of THIS group: keystrokes saved by leaving it stationary
-        # instead of cut-pasting it. (The dict key stays named 'chars' so the
-        # surrounding cache/compare code is untouched; it now holds a score.)
+        # instead of cut-pasting it. (Dict key stays 'chars' so cache/compare
+        # code is untouched; it now holds a score, not a char count.)
         size = self.groups[start].chars
         spine_value = self.w_char * size - (self.move_base + self.move_log_k * math.log(1 + size))
         return_obj['chars'] += spine_value
