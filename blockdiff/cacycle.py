@@ -152,18 +152,50 @@ RE_COUNT_CHUNKS = RE_SPLIT['chunk']
 
 class DiffText:
     """Manages the tokenization and parsing of a single text version."""
-    def __init__(self, text: str):
-        # Normalize line endings
-        self.text = str(text).replace('\r\n', '\n').replace('\r', '\n')
-        self.tokens: List[TokenInfo] = []
-        self.first: Optional[int] = None
-        self.last: Optional[int] = None
+
+    def __init__(self, 
+                 char_diff: bool = True, 
+                 repeated_diff: bool = True, 
+                 recursive_diff: bool = True, 
+                 recursion_max: int = 10, 
+                 unlink_blocks: bool = True, 
+                 unlink_max: int = 5, 
+                 block_min_length: int = 3,
+                 w_char: float = 1.0,
+                 move_base: float = 4.0,
+                 move_log_k: float = 1.0,
+                 trust_lone_unique: bool = False):
+                 
+        self.char_diff = char_diff
+        self.repeated_diff = repeated_diff
+        self.recursive_diff = recursive_diff
+        self.recursion_max = recursion_max
+        self.unlink_blocks = unlink_blocks
+        self.unlink_max = unlink_max
+        self.block_min_length = block_min_length
+
+        # Keystroke-energy knobs. Read only by _find_max_path.
+        self.w_char = w_char
+        self.move_base = move_base
+        self.move_log_k = move_log_k
+
+        # wikEd's hidden bet, now a knob. False = MY default: a lone unique word
+        # is coincidence across a blob boundary, subject to the length floor.
+        # True = wikEd's original single-document behavior.
+        self.trust_lone_unique = trust_lone_unique
+
+        self.new_text: Optional[DiffText] = None
+        self.old_text: Optional[DiffText] = None
         
-        # Counter inherently handles initial zero-values
-        self.words: Counter[str] = Counter()
+        self.symbols: Dict[str, Any] = {'token': [], 'hashTable': {}, 'linked': False}
+        self.borders_down: List[Tuple[int, int]] = []
+        self.borders_up: List[Tuple[int, int]] = []
         
-        self._count_words(RE_COUNT_WORDS)
-        self._count_words(RE_COUNT_CHUNKS)
+        self.blocks: List[DiffBlock] = []
+        self.groups: List[DiffGroup] = []
+        self.sections: List[Dict[str, int]] = []
+        
+        self.max_words = 0
 
     def _count_words(self, regex: re.Pattern):
         """Populates the word frequency counter for uniqueness checks."""
@@ -266,6 +298,7 @@ class BlockDiffEngine:
         ("w_char",     float, 1.0, "Weight of one kept (stationary) character on the spine."),
         ("move_base",  float, 4.0, "Flat cost of one cut-paste move (Ctrl-X/Ctrl-V ~= 4 keys)."),
         ("move_log_k", float, 1.0, "How fast selection effort grows with block size (log scale)."),
+        ("trust_lone_unique", bool, False, "Keep isolated unique-word matches shorter than block_min_length. False (default): a lone unique word is treated as coincidence and subject to the length floor — correct for concatenated/multi-file input. True: wikEd's original single-document bet, where a lone unique word is signal."),
     ]
     def __init__(self, 
                  char_diff: bool = True, 
@@ -1052,9 +1085,11 @@ class BlockDiffEngine:
 
     def _unlink_blocks(self) -> bool:
         """Convert short non-unique '=' runs into +/- noise. Anchor groups are
-        EXEMPT — a pole is never noise, never eaten, even if it's short. Losing
-        one silently dissolves a file boundary (two files fuse with no error) —
-        the exact silent-wrong failure class this whole effort exists to kill."""
+        EXEMPT — a pole is never noise. The unique-word exemption below is
+        wikEd's single-document bet: a lone unique word is signal worth keeping.
+        The blob path switches that bet off (trust_lone_unique=False) because
+        across a fabricated file boundary a lone unique match is coincidence, and
+        the block_min_length floor must apply to it like anything else."""
         unlinked = False
         for group in self.groups:
             if group.is_anchor:
@@ -1063,7 +1098,11 @@ class BlockDiffEngine:
             block_start = group.block_start
             block_end = group.block_end
 
-            if group.max_words < self.block_min_length and not group.unique:
+            # Below-floor group. The unique exemption holds ONLY when we still
+            # trust lone unique matches (native wikEd single-document mode). With
+            # trust_lone_unique=False the floor applies to unique groups too, and
+            # it SCALES with block_min_length — one word, three words, whatever.
+            if group.max_words < self.block_min_length and (not group.unique or not self.trust_lone_unique):
                 for b in range(block_start, block_end + 1):
                     if self.blocks[b].type == '=':
                         self._unlink_single_block(self.blocks[b])

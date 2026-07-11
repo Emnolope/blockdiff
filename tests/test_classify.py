@@ -230,3 +230,18 @@ def test_cross_file_move_reported_even_when_engine_marks_it_fixed():
         "fixed=True mover leaked into removed (double-count)"
     assert not any("quorum sensing" in a.content for a in added), \
         "fixed=True mover leaked into added (double-count)"
+
+def test_short_coincidental_cross_file_token_is_not_a_move():
+    """A lone common-ish word appears in a comment in a.py and, separately, in
+    b.py. It did NOT move — it's a coincidence of two unrelated files sharing a
+    token. It must be reported as removed+added (or nothing), NEVER as a move.
+    This is the repo-on-itself gibberish: 'change', 'fix', 'chain' reported as
+    cross-file moves. Moves must be real blocks, not token coincidences."""
+    word = "cartographer"
+    old = {"a.py": f"# the {word} drew\n\nreal unique alpha body content here alone",
+           "b.py": "# totally different\n\nreal unique beta body content here alone"}
+    new = {"a.py": "# the drew\n\nreal unique alpha body content here alone",
+           "b.py": f"# totally {word} different\n\nreal unique beta body content here alone"}
+    removed, added, moved = find_moves(old, new)
+    assert not any(word in m.content for m in moved), \
+        f"lone coincidental token {word!r} reported as a cross-file move"
