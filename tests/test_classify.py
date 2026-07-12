@@ -245,3 +245,51 @@ def test_short_coincidental_cross_file_token_is_not_a_move():
     removed, added, moved = find_moves(old, new)
     assert not any(word in m.content for m in moved), \
         f"lone coincidental token {word!r} reported as a cross-file move"
+
+def test_trailing_del_absorbed_into_moved_group():
+    """Equity for '-'. A '-' that lands one past a moved group's block_end
+    after old_number tiebreaking must be absorbed, not orphaned."""
+    from blockdiff.match import build_blobs
+    from blockdiff.cacycle import BlockDiffEngine
+
+    body = (
+        "def function_that_relocates_entirely():\n"
+        "    result = compute_something_quite_unique_here()\n"
+        "    intermediate = transform_the_result_further_now()\n"
+        "    final = validate_and_return_intermediate(intermediate)\n"
+        "    processed = apply_business_logic_to_final(final)\n"
+    )
+    doomed_line = "    assert any(\"crucial marker\" in r for r in processed)\n"
+
+    old = {
+        "src.py": f"# source module\n\n{body}{doomed_line}",
+        "dst.py": "# destination module\n\nplaceholder only here\n",
+    }
+    new = {
+        # Doomed line is GONE at the destination — pure deletion inside the move.
+        "src.py": "# source module\n\n# stub — body relocated\n",
+        "dst.py": f"# destination module\n\nplaceholder only here\n\n{body}",
+    }
+
+    ob, nb, first, om, nm, pl = build_blobs(old, new)
+    engine = BlockDiffEngine(block_min_length=3)
+    blocks = engine.compute_diff(ob, nb, prelinks=pl)
+
+    moved_groups = [(gi, g) for gi, g in enumerate(engine.groups)
+                    if g.fixed is False and g.color_id is not None]
+    assert moved_groups, "no moved group detected"
+
+    gi, mg = moved_groups[0]
+    group_text = "".join(blocks[b].text or ""
+                         for b in range(mg.block_start, mg.block_end + 1))
+
+    assert "crucial marker" in group_text, (
+        f"trailing '-' NOT in moved group g[{gi}] — orphaned as singleton.\n"
+        f"group text: {group_text[:200]!r}")
+
+    for gi2, g2 in enumerate(engine.groups):
+        if g2.block_start == g2.block_end:
+            bt = blocks[g2.block_start].text or ""
+            assert "crucial marker" not in bt, (
+                f"deletion is singleton in g[{gi2}] (fixed={g2.fixed}, "
+                f"color={g2.color_id}) — trailing '-' was not absorbed")

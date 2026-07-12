@@ -1236,12 +1236,39 @@ class BlockDiffEngine:
 
     def _set_ins_groups(self):
         """Assigns the proper group block index to isolated insertion elements."""
+        # Pass 1: fill +/- blocks that land INSIDE an existing group's block span.
         for group_idx, group in enumerate(self.groups):
+            fixed = group.fixed
             for b in range(group.block_start, group.block_end + 1):
                 if self.blocks[b].group is None:
                     self.blocks[b].group = group_idx
-                    self.blocks[b].fixed = group.fixed
+                    self.blocks[b].fixed = fixed
 
+        # Pass 1.5 — absorb trailing +/- orphans into the preceding moved group.
+        #
+        # A +/- with no group that sits immediately after a moved group (fixed=False)
+        # in block order is an inline edit of the relocated content. It belongs to
+        # that move. Attribution is positional only — never content — so two distinct
+        # moved groups can never alias: each has its own index and we only extend the
+        # immediately preceding one.
+        for block_idx, block in enumerate(self.blocks):
+            if block.group is not None or block.type not in ('+', '-'):
+                continue
+            if block_idx == 0:
+                continue
+            prev_group_idx = self.blocks[block_idx - 1].group
+            if prev_group_idx is None:
+                continue
+            prev_group = self.groups[prev_group_idx]
+            if prev_group.fixed is not False:
+                # Only absorb into genuinely moved groups (fixed=False).
+                # fixed=True = stationary/anchor, skip. fixed=None = another orphan, skip.
+                continue
+            block.group = prev_group_idx
+            block.fixed = prev_group.fixed
+            prev_group.block_end = block_idx
+
+        # Pass 2: any still-ungrouped blocks become new singleton groups.
         for block_idx, block in enumerate(self.blocks):
             if block.group is None:
                 block.group = len(self.groups)
