@@ -153,49 +153,26 @@ RE_COUNT_CHUNKS = RE_SPLIT['chunk']
 class DiffText:
     """Manages the tokenization and parsing of a single text version."""
 
-    def __init__(self, 
-                 char_diff: bool = True, 
-                 repeated_diff: bool = True, 
-                 recursive_diff: bool = True, 
-                 recursion_max: int = 10, 
-                 unlink_blocks: bool = True, 
-                 unlink_max: int = 5, 
-                 block_min_length: int = 3,
-                 w_char: float = 1.0,
-                 move_base: float = 4.0,
-                 move_log_k: float = 1.0,
-                 trust_lone_unique: bool = False):
-                 
-        self.char_diff = char_diff
-        self.repeated_diff = repeated_diff
-        self.recursive_diff = recursive_diff
-        self.recursion_max = recursion_max
-        self.unlink_blocks = unlink_blocks
-        self.unlink_max = unlink_max
+    def __init__(self, text: str, block_min_length: int = 3):
+        """Holds ONE version's text and its token list. Takes the text itself,
+        not engine config. (A prior refactor pasted the engine's config
+        signature onto this class, which starved self.text/self.tokens and broke
+        every real diff — see the AttributeError on split_text.)"""
+        if not isinstance(text, str):
+            text = str(text)
+        # IE/Mac newline normalization, mirrors diff.js.
+        self.text = text.replace('\r\n', '\n').replace('\r', '\n')
+
+        self.tokens: List[TokenInfo] = []
+        self.first: Optional[int] = None
+        self.last: Optional[int] = None
+        self.words: Counter = Counter()
+
         self.block_min_length = block_min_length
 
-        # Keystroke-energy knobs. Read only by _find_max_path.
-        self.w_char = w_char
-        self.move_base = move_base
-        self.move_log_k = move_log_k
-
-        # wikEd's hidden bet, now a knob. False = MY default: a lone unique word
-        # is coincidence across a blob boundary, subject to the length floor.
-        # True = wikEd's original single-document behavior.
-        self.trust_lone_unique = trust_lone_unique
-
-        self.new_text: Optional[DiffText] = None
-        self.old_text: Optional[DiffText] = None
-        
-        self.symbols: Dict[str, Any] = {'token': [], 'hashTable': {}, 'linked': False}
-        self.borders_down: List[Tuple[int, int]] = []
-        self.borders_up: List[Tuple[int, int]] = []
-        
-        self.blocks: List[DiffBlock] = []
-        self.groups: List[DiffGroup] = []
-        self.sections: List[Dict[str, int]] = []
-        
-        self.max_words = 0
+        # Word/chunk frequency for uniqueness checks (diff.js wordParse).
+        self._count_words(RE_COUNT_WORDS)
+        self._count_words(RE_COUNT_CHUNKS)
 
     def _count_words(self, regex: re.Pattern):
         """Populates the word frequency counter for uniqueness checks."""
@@ -310,7 +287,8 @@ class BlockDiffEngine:
                  block_min_length: int = 3,
                  w_char: float = 1.0,
                  move_base: float = 4.0,
-                 move_log_k: float = 1.0):
+                 move_log_k: float = 1.0,
+                 trust_lone_unique: bool = False):
                  
         self.char_diff = char_diff
         self.repeated_diff = repeated_diff
@@ -325,6 +303,11 @@ class BlockDiffEngine:
         self.move_base = move_base
         self.move_log_k = move_log_k
 
+        # wikEd's single-document bet, now a knob. False = MY default: across a
+        # blob boundary a lone unique word is coincidence, subject to the length
+        # floor. Read by _unlink_blocks.
+        self.trust_lone_unique = trust_lone_unique
+
         self.new_text: Optional[DiffText] = None
         self.old_text: Optional[DiffText] = None
         
@@ -337,7 +320,6 @@ class BlockDiffEngine:
         self.sections: List[Dict[str, int]] = []
         
         self.max_words = 0
-
     def compute_diff(self, old_string: str, new_string: str,
                      prelinks=None) -> List[DiffBlock]:
         """Main entry point. old_string -> new_string, returns typed DiffBlocks.
