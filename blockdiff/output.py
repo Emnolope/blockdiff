@@ -1,3 +1,4 @@
+# blockdiff/output.py
 import json
 from typing import List
 from rich.console import Console
@@ -6,7 +7,7 @@ from rich.text import Text
 from rich.rule import Rule
 
 from .parse import RenamedFile
-from .match import MovedBlock, ResultBlock
+from .match import MovedBlock, ResultBlock, MoveFragment
 
 
 # ── palette ───────────────────────────────────────────────────────────────
@@ -33,7 +34,9 @@ def _payload(removed: List[ResultBlock], added: List[ResultBlock],
                   for a in added],
         "moved": [{"from_file": m.source_file, "from_line": m.source_line,
                    "to_file": m.target_file, "to_line": m.target_line,
-                   "content": m.content} for m in moved],
+                   "content": m.content,
+                   "fragments": [{"kind": f.kind, "content": f.content} for f in getattr(m, 'fragments', [])]} 
+                  for m in moved],
         "summary": {"renamed_count": len(renamed), "removed_count": len(removed),
                     "added_count": len(added), "moved_count": len(moved)},
     }
@@ -47,19 +50,60 @@ def _section(console: Console, title: str, style: str, count: int):
 
 
 def _body(console: Console, content: str, style: str, gutter_start: int):
-    """Print a content block: every physical line gets a dim line-number gutter
-    and the content itself, with markup DISABLED so brackets/backslashes in code
-    render literally instead of being parsed as rich tags (the purple bug)."""
+    """Fallback for raw single-colored blocks without threaded fragments."""
     lines = content.split("\n")
     for i, line in enumerate(lines):
         n = gutter_start + i if gutter_start >= 0 else None
         gutter = f"{n:>5} " if n is not None else "    · "
         t = Text()
         t.append(gutter, style=C_GUTTER)
-        # THE fix: markup=False lives on Text.append via no-parse; we build Text
-        # explicitly so nothing is ever interpreted as a style tag.
         t.append(line, style=style)
         console.print(t)
+
+
+def _body_fragments(console: Console, fragments: List[MoveFragment], gutter_start: int):
+    """Renders threaded inline fragments (=, +, -) seamlessly wrapped, 
+    switching colors mid-line as a single contiguous block."""
+    n = gutter_start if gutter_start >= 0 else None
+    current_text = Text()
+    
+    def emit_line():
+        nonlocal n, current_text
+        gutter = f"{n:>5} " if n is not None else "    · "
+        out = Text()
+        out.append(gutter, style=C_GUTTER)
+        out.append(current_text)
+        console.print(out)
+        current_text = Text() # Reset buffer for the next line
+
+    for frag in fragments:
+        if frag.kind == '=':
+            style = C_MOVE
+        elif frag.kind == '+':
+            style = C_ADD
+        elif frag.kind == '-':
+            style = C_DEL
+        else:
+            style = ""
+
+        # Split by newline but keep empty parts so we know exactly when to drop down a line
+        parts = frag.content.split('\n')
+        
+        for i, part in enumerate(parts):
+            if i > 0:
+                # We hit a newline in the fragment. Emit what we have.
+                emit_line()
+                # Target file line counter ONLY advances on real target text (=, +)
+                if frag.kind in ('=', '+') and n is not None:
+                    n += 1
+            
+            # Append the actual inline text with its specific color
+            if part:
+                current_text.append(part, style=style)
+                
+    # Flush whatever is left in the buffer at the end of the block
+    if len(current_text) > 0:
+        emit_line()
 
 
 def render_diff(removed: List[ResultBlock], added: List[ResultBlock],
@@ -87,7 +131,13 @@ def render_diff(removed: List[ResultBlock], added: List[ResultBlock],
             head.append("  →  ", style=C_ARROW)
             head.append(f"{m.target_file}:{m.target_line}", style=f"{C_MOVE} bold")
             console.print(head)
-            _body(console, m.content, C_MOVE, m.target_line)
+            
+            fragments = getattr(m, 'fragments', [])
+            if fragments:
+                _body_fragments(console, fragments, m.target_line)
+            else:
+                _body(console, m.content, C_MOVE, m.target_line)
+                
             console.print()
 
     if removed:

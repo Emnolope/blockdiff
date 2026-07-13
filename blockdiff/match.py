@@ -1,3 +1,4 @@
+# blockdiff/match.py
 # match.py — ATTRIBUTION ONLY. This file is STUPID ON PURPOSE.
 #
 # ┌─────────────────────────────────────────────────────────────────────────┐
@@ -46,10 +47,16 @@
 
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
 
 from .cacycle import BlockDiffEngine, DiffBlock as EngineBlock
+
+
+@dataclass
+class MoveFragment:
+    kind: str
+    content: str
 
 
 @dataclass
@@ -59,6 +66,7 @@ class MovedBlock:
     target_file: str
     target_line: int
     content: str
+    fragments: List[MoveFragment] = field(default_factory=list)
 
 
 @dataclass
@@ -183,56 +191,105 @@ def classify(blocks: List[EngineBlock],
     added: List[ResultBlock] = []
     moved: List[MovedBlock] = []
 
+    # The `blocks` list is already sorted by `new_number`.
+    # We group blocks by their engine-assigned `group` ID.
+    groups_dict = {}
     for b in blocks:
         if b.type == '|':
-            continue  # move ghost; the '=' block carries its own addresses
+            continue
+        if b.group is not None:
+            groups_dict.setdefault(b.group, []).append(b)
 
-        content = _clean(b.text or "")
-        if not content:
+    for group_id, group_blocks in groups_dict.items():
+        fragments = []
+        for b in group_blocks:
+            content = _clean(b.text or "")
+            if content:
+                fragments.append((b, content))
+        
+        if not fragments:
             continue
 
-        if b.type == '-':
-            src = _file_owning(b.old_char, old_marks, first_file)
-            if src is not None:
-                removed.append(ResultBlock(
-                    src, _line_of(old_files.get(src, ""), content), content))
-
-        elif b.type == '+':
-            dst = _file_owning(b.new_char, new_marks, first_file)
-            if dst is not None:
-                added.append(ResultBlock(
-                    dst, _line_of(new_files.get(dst, ""), content), content))
-
-        elif b.type == '=':
-            # ───────────────────────── TOMBSTONE (REVISED) ─────────────────
-            # The ORIGINAL tombstone forbade `src != dst`, believing b.fixed
-            # carried the move verdict. The witness (test_witness.py) MEASURED
-            # fixed=True on a block whose old end sat behind a.md's sentinel and
-            # whose new end sat behind b.md's — a real cross-file move the engine
-            # had frozen onto its stationary spine. Keying on fixed dropped it
-            # into the void: not moved, not removed, not added. Content vanished.
-            #
-            # So `src != dst` is RESURRECTED, deliberately, because the sentinel
-            # crossing is the ONLY signal that honestly answers "did this change
-            # files." It does not decide same-vs-different content — the engine
-            # already did that by emitting this as one '=' run. We only label the
-            # two ends. `fixed` is IGNORED here on purpose: it answers a
-            # different question (energy frame), not ours (file attribution).
-            #
-            # KNOWN LIMIT (unchanged, still true): in --files single-pair mode
-            # there is one sentinel per side, so src always == dst and a
-            # within-file reorder won't surface. That's a single-pair limitation,
-            # not a regression; the multi-file blob path (the real use case)
-            # attributes correctly.
-            # DO NOT re-add a b.fixed gate here. The witness settled it.
-            # ────────────────────────────────────────────────────────────────
-            src = _file_owning(b.old_char, old_marks, first_file)
-            dst = _file_owning(b.new_char, new_marks, first_file)
-            if src is not None and dst is not None and src != dst:
-                moved.append(MovedBlock(
-                    src, _line_of(old_files.get(src, ""), content),
-                    dst, _line_of(new_files.get(dst, ""), content), content))
-            # src == dst -> stationary within one file -> emit nothing
+        # Use the group's first '=' block (if any) as the stable anchor to
+        # check if this is a cross-file move.
+        src = None
+        dst = None
+        for b, content in fragments:
+            if b.type == '=':
+                src = _file_owning(b.old_char, old_marks, first_file)
+                dst = _file_owning(b.new_char, new_marks, first_file)
+                break
+# WHY ARE THESE FUCKING AI FIGHTING IN MY FUCKING CODEBASE??!??
+#        if src is not None and dst is not None and src != dst:
+#            # ───────────────────────── TOMBSTONE (REVISED) ─────────────────
+#            # The ORIGINAL tombstone forbade `src != dst`, believing b.fixed
+#            # carried the move verdict. The witness (test_witness.py) MEASURED
+#            # fixed=True on a block whose old end sat behind a.md's sentinel and
+#            # whose new end sat behind b.md's — a real cross-file move the engine
+#            # had frozen onto its stationary spine. Keying on fixed dropped it
+#            # into the void. So `src != dst` is RESURRECTED because the sentinel 
+#            # crossing is the ONLY signal that honestly answers "did this change 
+#            # files." We only label the two ends. 
+#            # ────────────────────────────────────────────────────────────────
+#            
+#            # This is a moved group. It may contain =, +, and - blocks.
+#            # They all belong together as threaded inline edits.
+#            joined_content = "".join(c for _, c in fragments)
+#            move_fragments = [MoveFragment(b.type, c) for b, c in fragments]
+#            
+#            # Find the cosmetic line numbers using the first '=' block's content
+#            first_eq_content = next((c for b, c in fragments if b.type == '='), None)
+#            source_line = -1
+#            target_line = -1
+#            if first_eq_content:
+#                source_line = _line_of(old_files.get(src, ""), first_eq_content)
+#                target_line = _line_of(new_files.get(dst, ""), first_eq_content)
+#                
+#            moved.append(MovedBlock(
+#                source_file=src,
+#                source_line=source_line,
+#                target_file=dst,
+#                target_line=target_line,
+#                content=joined_content,
+#                fragments=move_fragments
+#            ))
+        if src is not None and dst is not None:
+            # ^^^ REMOVED 'and src != dst'. 
+            # Now ALL grouped edits stay together as a single contiguous block, 
+            # whether they crossed a file boundary or happened in-place.
+            
+            joined_content = "".join(c for _, c in fragments)
+            move_fragments = [MoveFragment(b.type, c) for b, c in fragments]
+            
+            first_eq_content = next((c for b, c in fragments if b.type == '='), None)
+            source_line = -1
+            target_line = -1
+            if first_eq_content:
+                source_line = _line_of(old_files.get(src, ""), first_eq_content)
+                target_line = _line_of(new_files.get(dst, ""), first_eq_content)
+                
+            moved.append(MovedBlock(
+                source_file=src,
+                source_line=source_line,
+                target_file=dst,
+                target_line=target_line,
+                content=joined_content,
+                fragments=move_fragments
+            ))
+        else:
+            # Non-moved group: stationary text within one file, or top-level additions/removals.
+            # We ignore '=' blocks (they are stationary content), and emit +/- as independent edits.
+            for b, content in fragments:
+                if b.type == '-':
+                    b_src = _file_owning(b.old_char, old_marks, first_file)
+                    if b_src is not None:
+                        removed.append(ResultBlock(
+                            b_src, _line_of(old_files.get(b_src, ""), content), content))
+                elif b.type == '+':
+                    b_dst = _file_owning(b.new_char, new_marks, first_file)
+                    if b_dst is not None:
+                        added.append(ResultBlock(
+                            b_dst, _line_of(new_files.get(b_dst, ""), content), content))
 
     return removed, added, moved
 
