@@ -248,7 +248,18 @@ def test_short_coincidental_cross_file_token_is_not_a_move():
 
 def test_trailing_del_absorbed_into_moved_group():
     """Equity for '-'. A '-' that lands one past a moved group's block_end
-    after old_number tiebreaking must be absorbed, not orphaned."""
+    after old_number tiebreaking must be absorbed, not orphaned.
+
+    NOTE: the moved group is located by its distinctive CONTENT, not by
+    `fixed is False`. A real mover is allowed to come back fixed=True (it can
+    legitimately win the keystroke-energy DP and become the stationary spine
+    — see test_cross_file_move_reported_even_when_engine_marks_it_fixed,
+    which locks exactly that). In THIS fixture the mover does win the DP,
+    while an unrelated bystander group (dst.py's pre-existing placeholder
+    text) gets bumped to fixed=False as collateral damage from losing the
+    old/new-order tie-break against the mover — that bystander is not a
+    move at all and must not be mistaken for one by a fixed-only filter.
+    """
     from blockdiff.match import build_blobs
     from blockdiff.cacycle import BlockDiffEngine
 
@@ -275,21 +286,29 @@ def test_trailing_del_absorbed_into_moved_group():
     engine = BlockDiffEngine(block_min_length=3)
     blocks = engine.compute_diff(ob, nb, prelinks=pl)
 
-    moved_groups = [(gi, g) for gi, g in enumerate(engine.groups)
-                    if g.fixed is False and g.color_id is not None]
-    assert moved_groups, "no moved group detected"
+    # Locate the mover by content, not by .fixed — the DP can legitimately
+    # freeze a real mover as the stationary spine (fixed=True).
+    mover_group = None
+    for gi, g in enumerate(engine.groups):
+        text = "".join(blocks[b].text or "" for b in range(g.block_start, g.block_end + 1))
+        if "compute_something_quite_unique_here" in text:
+            mover_group = g
+            break
+    assert mover_group is not None, "moved body not found in any group"
 
-    gi, mg = moved_groups[0]
     group_text = "".join(blocks[b].text or ""
-                         for b in range(mg.block_start, mg.block_end + 1))
+                         for b in range(mover_group.block_start, mover_group.block_end + 1))
 
     assert "crucial marker" in group_text, (
-        f"trailing '-' NOT in moved group g[{gi}] — orphaned as singleton.\n"
+        f"trailing '-' NOT in the mover's group — orphaned as singleton.\n"
         f"group text: {group_text[:200]!r}")
 
+    # And it must not ALSO show up anywhere else as an orphaned singleton.
     for gi2, g2 in enumerate(engine.groups):
+        if g2 is mover_group:
+            continue
         if g2.block_start == g2.block_end:
             bt = blocks[g2.block_start].text or ""
             assert "crucial marker" not in bt, (
-                f"deletion is singleton in g[{gi2}] (fixed={g2.fixed}, "
-                f"color={g2.color_id}) — trailing '-' was not absorbed")
+                f"deletion double-counted as a singleton in g[{gi2}] "
+                f"(fixed={g2.fixed}, color={g2.color_id})")

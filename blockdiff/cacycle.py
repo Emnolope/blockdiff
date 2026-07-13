@@ -1157,7 +1157,7 @@ class BlockDiffEngine:
                 pb_new_idx = blocks_old[block_idx - 1][1].new_block_idx
                 if pb_new_idx is not None:
                     prev_block = self.blocks[pb_new_idx]
-            
+
             next_block = None
             if block_idx < len(blocks_old) - 1:
                 nb_new_idx = blocks_old[block_idx + 1][1].new_block_idx
@@ -1173,6 +1173,13 @@ class BlockDiffEngine:
                 ref_block = prev_block
             elif next_block and next_block.type == '=' and next_block != self.blocks[self.groups[next_block.group].block_start]:
                 ref_block = next_block
+#            elif prev_block and prev_block.type == '=' and prev_block.fixed is False:
+#                # Trailing '-' immediately after a MOVED group's last block.
+#                # Checks above require prev_block to be mid-group (not block_end)
+#                # because reattaching at a fixed group's boundary risks corrupting
+#                # it. But a moved group's tail is exactly where an in-move edit
+#                # belongs — attach directly, position-based, not content-based.
+#                ref_block = prev_block
             else:
                 for fixed in range(block_idx, -1, -1):
                     if blocks_old[fixed][1].type == '=' and blocks_old[fixed][1].fixed:
