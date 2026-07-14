@@ -86,19 +86,9 @@ _SEP_RE = re.compile(re.escape(_FENCE) + r"([0-9a-f]{32})" + re.escape(_END))
 def _new_sentinel() -> str:
     return f"{_FENCE}{uuid.uuid4().hex}{_END}"
 
-def build_blobs(old_files: Dict[str, str], new_files: Dict[str, str]):
-    """Concatenate files into two blobs, each file preceded by a sentinel
-    identical across old and new. Records, per side, each sentinel's CHARACTER
-    OFFSET (for attribution) AND its (start,end) span (for the engine's
-    stationary prelinks — the poles).
 
-    Returns:
-        old_blob, new_blob, first_file,
-        old_marks, new_marks,        # each sorted list of (char_offset, file)
-        prelinks                     # list of (old_span, new_span, "stationary")
-                                     # one per file, feeding compute_diff.
-    """
-    order = list(dict.fromkeys(list(old_files) + list(new_files)))
+def build_blobs(old_files: Dict[str, str], new_files: Dict[str, str]):
+    order = sorted(dict.fromkeys(list(old_files) + list(new_files)))
     old_parts, new_parts = [], []
     old_marks: List[Tuple[int, str]] = []
     new_marks: List[Tuple[int, str]] = []
@@ -112,9 +102,6 @@ def build_blobs(old_files: Dict[str, str], new_files: Dict[str, str]):
 
         old_marks.append((old_len, path))
         new_marks.append((new_len, path))
-
-        # Each sentinel is a stationary pole: same content, same logical place,
-        # pinned as the ground frame on both sides.
         prelinks.append(((old_len, old_len + slen),
                          (new_len, new_len + slen),
                          "stationary"))
@@ -131,68 +118,59 @@ def build_blobs(old_files: Dict[str, str], new_files: Dict[str, str]):
     return ("".join(old_parts), "".join(new_parts), first_file,
             old_marks, new_marks, prelinks)
 
-def _file_owning(char_offset: Optional[int], marks: List[Tuple[int, str]],
-                 first_file: Optional[str]) -> Optional[str]:
-    """THE ONLY LEGAL CLEVERNESS IN THIS FILE, and it is not even clever — it is
-    arithmetic. Return the file whose sentinel most recently opened at or before
-    char_offset. This is a READ of positions we authored in build_blobs, not a
-    search for something unknown.
 
-    None offset means the block has no address on this side (a '-' has no new
-    address, a '+' has no old) -> None owner. That is correct and expected."""
+def _file_owning(char_offset: Optional[int], marks: List[Tuple[int, str]],
+                 first_file: Optional[str]) -> Tuple[Optional[str], Optional[int]]:
+    """Returns (owning_file, that_file's_sentinel_start_offset). None offset ->
+    (None, None): the block has no address on this side."""
     if char_offset is None or not marks:
-        return None
-    owner = first_file
+        return None, None
+    owner, owner_offset = first_file, marks[0][0] if marks else None
     for offset, path in marks:
         if offset <= char_offset:
-            owner = path
+            owner, owner_offset = path, offset
         else:
             break
-    return owner
+    return owner, owner_offset
 
+
+_SEP_WITH_PADDING_RE = re.compile(
+    r"\n\n" + re.escape(_FENCE) + r"[0-9a-f]{32}" + re.escape(_END) + r"\n\n")
 
 def _clean(text: str) -> str:
-    """Strip sentinel debris for DISPLAY only. Identity never touched this."""
-    return _SEP_RE.sub("", text).strip("\n")
+    """Strip sentinel + its injected \\n\\n padding for DISPLAY only. Bare
+    .strip('\\n') would also eat genuine user blank lines at block edges
+    (PEP8 spacing, intentional paragraph breaks) — this only removes the
+    exact bytes build_blobs put there."""
+    text = _SEP_WITH_PADDING_RE.sub("", text)
+    return _SEP_RE.sub("", text)  # any sentinel not caught by the padded form
 
+_SENTINEL_LEN = len(_FENCE) + 32 + len(_END)  # module-level constant
 
-def _line_of(content: str, fragment: str) -> int:
-    """Cosmetic line number of a fragment inside its file, or -1 if absent.
-    A first-match find is fine: this is display, never identity. Returns -1
-    honestly rather than lying with a plausible-but-wrong number."""
-    if not fragment:
+def _line_of(char_offset: Optional[int], file_start_offset: Optional[int],
+             file_text: str) -> int:
+    """Exact line number of char_offset relative to its file's own text,
+    computed from authored positions, never by searching file_text for a
+    string. -1 means "no real address here" (e.g. a '+' has no old_char, a
+    pure-rewrite move has no shared '=' anchor) — an honest absence, not a
+    guess."""
+    if char_offset is None or file_start_offset is None:
         return -1
-    idx = content.find(fragment)
-    if idx == -1 and fragment.strip():
-        idx = content.find(fragment.strip())
-    return content.count('\n', 0, idx) + 1 if idx != -1 else -1
+    rel = char_offset - file_start_offset - _SENTINEL_LEN - 2  # -2 for "\n\n"
+    if rel < 0 or rel > len(file_text):
+        return -1
+    return file_text.count('\n', 0, rel) + 1
+
 
 def classify(blocks: List[EngineBlock],
              old_marks: List[Tuple[int, str]], new_marks: List[Tuple[int, str]],
              first_file: Optional[str],
              old_files: Dict[str, str], new_files: Dict[str, str]
              ) -> Tuple[List[ResultBlock], List[ResultBlock], List[MovedBlock]]:
-    """Attribution by SENTINEL CROSSING. The engine decides what content is the
-    same run; the sentinels decide which FILE each end sits in. Those are two
-    different questions and this function only answers the second.
-
-    History correction (read the tombstone below): a prior version keyed the '='
-    branch on b.fixed, believing fixed=True meant 'did not move'. The witness
-    disproved that — the engine stamped fixed=True on a block that demonstrably
-    changed files, because `fixed` marks the stationary ENERGY FRAME (the
-    max-keystroke-saving spine), NOT file-stationarity. A block can be on the
-    spine and STILL sit behind a different sentinel on each side. So we attribute
-    by file crossing (src != dst), which is precisely what the sentinels exist
-    to reveal. This is NOT re-deriving move detection — the engine already
-    proved the run is the same content; we only read which files its two ends
-    land in.
-    """
     removed: List[ResultBlock] = []
     added: List[ResultBlock] = []
     moved: List[MovedBlock] = []
 
-    # The `blocks` list is already sorted by `new_number`.
-    # We group blocks by their engine-assigned `group` ID.
     groups_dict = {}
     for b in blocks:
         if b.type == '|':
@@ -206,92 +184,52 @@ def classify(blocks: List[EngineBlock],
             content = _clean(b.text or "")
             if content:
                 fragments.append((b, content))
-        
         if not fragments:
             continue
 
-        # Use the group's first '=' block (if any) as the stable anchor to
-        # check if this is a cross-file move.
-        src = None
-        dst = None
+        src = dst = None
+        src_off = dst_off = None
+        has_plus = any(b.type == '+' for b, _ in fragments)
         for b, content in fragments:
             if b.type == '=':
-                src = _file_owning(b.old_char, old_marks, first_file)
-                dst = _file_owning(b.new_char, new_marks, first_file)
+                src, src_off = _file_owning(b.old_char, old_marks, first_file)
+                dst, dst_off = _file_owning(b.new_char, new_marks, first_file)
                 break
-# WHY ARE THESE FUCKING AI FIGHTING IN MY FUCKING CODEBASE??!??
-#        if src is not None and dst is not None and src != dst:
-#            # ───────────────────────── TOMBSTONE (REVISED) ─────────────────
-#            # The ORIGINAL tombstone forbade `src != dst`, believing b.fixed
-#            # carried the move verdict. The witness (test_witness.py) MEASURED
-#            # fixed=True on a block whose old end sat behind a.md's sentinel and
-#            # whose new end sat behind b.md's — a real cross-file move the engine
-#            # had frozen onto its stationary spine. Keying on fixed dropped it
-#            # into the void. So `src != dst` is RESURRECTED because the sentinel 
-#            # crossing is the ONLY signal that honestly answers "did this change 
-#            # files." We only label the two ends. 
-#            # ────────────────────────────────────────────────────────────────
-#            
-#            # This is a moved group. It may contain =, +, and - blocks.
-#            # They all belong together as threaded inline edits.
-#            joined_content = "".join(c for _, c in fragments)
-#            move_fragments = [MoveFragment(b.type, c) for b, c in fragments]
-#            
-#            # Find the cosmetic line numbers using the first '=' block's content
-#            first_eq_content = next((c for b, c in fragments if b.type == '='), None)
-#            source_line = -1
-#            target_line = -1
-#            if first_eq_content:
-#                source_line = _line_of(old_files.get(src, ""), first_eq_content)
-#                target_line = _line_of(new_files.get(dst, ""), first_eq_content)
-#                
-#            moved.append(MovedBlock(
-#                source_file=src,
-#                source_line=source_line,
-#                target_file=dst,
-#                target_line=target_line,
-#                content=joined_content,
-#                fragments=move_fragments
-#            ))
-        if src is not None and dst is not None:
-            # ^^^ REMOVED 'and src != dst'. 
-            # Now ALL grouped edits stay together as a single contiguous block, 
-            # whether they crossed a file boundary or happened in-place.
-            
-            joined_content = "".join(c for _, c in fragments)
+
+        # A group is a MOVE — cross-file OR same-file threaded edit — only if
+        # it actually relocates/inserts content (has a '+' somewhere, or its
+        # anchor genuinely crosses files). A group that is JUST a stationary
+        # anchor plus a '-' with nothing added anywhere is a plain deletion:
+        # nothing moved, nothing was inserted, it just left. That must stay
+        # in `removed`, not get wrapped in a same-file "move" that reports
+        # nothing on the target side.
+        is_real_move = src is not None and dst is not None and (src != dst or has_plus)
+
+        if is_real_move:
             move_fragments = [MoveFragment(b.type, c) for b, c in fragments]
-            
-            first_eq_content = next((c for b, c in fragments if b.type == '='), None)
-            source_line = -1
-            target_line = -1
-            if first_eq_content:
-                source_line = _line_of(old_files.get(src, ""), first_eq_content)
-                target_line = _line_of(new_files.get(dst, ""), first_eq_content)
-                
+            joined_content = "".join(c for b, c in fragments if b.type in ('=', '+'))
+            first_eq = next(((b, c) for b, c in fragments if b.type == '='), None)
+            source_line = _line_of(first_eq[0].old_char, src_off, old_files.get(src, "")) if first_eq else -1
+            target_line = _line_of(first_eq[0].new_char, dst_off, new_files.get(dst, "")) if first_eq else -1
             moved.append(MovedBlock(
-                source_file=src,
-                source_line=source_line,
-                target_file=dst,
-                target_line=target_line,
-                content=joined_content,
-                fragments=move_fragments
-            ))
+                source_file=src, source_line=source_line,
+                target_file=dst, target_line=target_line,
+                content=joined_content, fragments=move_fragments))
         else:
-            # Non-moved group: stationary text within one file, or top-level additions/removals.
-            # We ignore '=' blocks (they are stationary content), and emit +/- as independent edits.
             for b, content in fragments:
                 if b.type == '-':
-                    b_src = _file_owning(b.old_char, old_marks, first_file)
+                    b_src, b_off = _file_owning(b.old_char, old_marks, first_file)
                     if b_src is not None:
                         removed.append(ResultBlock(
-                            b_src, _line_of(old_files.get(b_src, ""), content), content))
+                            b_src, _line_of(b.old_char, b_off, old_files.get(b_src, "")), content))
                 elif b.type == '+':
-                    b_dst = _file_owning(b.new_char, new_marks, first_file)
+                    b_dst, b_off = _file_owning(b.new_char, new_marks, first_file)
                     if b_dst is not None:
                         added.append(ResultBlock(
-                            b_dst, _line_of(new_files.get(b_dst, ""), content), content))
+                            b_dst, _line_of(b.new_char, b_off, new_files.get(b_dst, "")), content))
 
     return removed, added, moved
+
 
 def find_moves(old_files: Dict[str, str],
                new_files: Dict[str, str],

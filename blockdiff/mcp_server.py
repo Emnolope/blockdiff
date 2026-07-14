@@ -17,7 +17,6 @@ mcp = FastMCP("blockdiff")
 # Defaults pulled straight from the engine's declared knobs.
 _ENGINE_DEFAULTS = {name: default for name, _t, default, _h in BlockDiffEngine.TUNABLE_PARAMS}
 
-
 @mcp.tool()
 def blockdiff(repo_path: str = ".", ref_old: str = "HEAD~1", ref_new: str = "HEAD",
               file1: str = "", file2: str = "",
@@ -44,11 +43,12 @@ def blockdiff(repo_path: str = ".", ref_old: str = "HEAD~1", ref_new: str = "HEA
                 new_files[file2] = f.read()
         else:
             changed, renamed = get_changed_files(repo_path, ref_old, ref_new)
+            renamed_paths = {r.old_path for r in renamed} | {r.new_path for r in renamed}
             for path in changed:
+                if path in renamed_paths:
+                    continue
                 oc = get_file_content(repo_path, ref_old, path)
                 nc = get_file_content(repo_path, ref_new, path)
-                # Same parity fix as cli._collect: don't drop a side purely for
-                # falsy content; keep regions aligned for attribution.
                 if oc or (not oc and not nc):
                     old_files[path] = oc
                 if nc or (not oc and not nc):
@@ -59,7 +59,6 @@ def blockdiff(repo_path: str = ".", ref_old: str = "HEAD~1", ref_new: str = "HEA
 
         engine_config = dict(_ENGINE_DEFAULTS)
         if engine_overrides:
-            # Only accept keys the engine actually declares. Ignore junk.
             for k, v in engine_overrides.items():
                 if k in _ENGINE_DEFAULTS:
                     engine_config[k] = v

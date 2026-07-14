@@ -62,46 +62,36 @@ def _body(console: Console, content: str, style: str, gutter_start: int):
 
 
 def _body_fragments(console: Console, fragments: List[MoveFragment], gutter_start: int):
-    """Renders threaded inline fragments (=, +, -) seamlessly wrapped, 
-    switching colors mid-line as a single contiguous block."""
     n = gutter_start if gutter_start >= 0 else None
     current_text = Text()
-    
+    line_has_target_content = False  # True once = or + lands on the current line
+
     def emit_line():
-        nonlocal n, current_text
-        gutter = f"{n:>5} " if n is not None else "    · "
+        nonlocal n, current_text, line_has_target_content
+        if line_has_target_content:
+            gutter = f"{n:>5} " if n is not None else "    · "
+        else:
+            gutter = "      "  # this line has no target-file line number
         out = Text()
         out.append(gutter, style=C_GUTTER)
         out.append(current_text)
         console.print(out)
-        current_text = Text() # Reset buffer for the next line
+        current_text = Text()
+        line_has_target_content = False
 
     for frag in fragments:
-        if frag.kind == '=':
-            style = C_MOVE
-        elif frag.kind == '+':
-            style = C_ADD
-        elif frag.kind == '-':
-            style = C_DEL
-        else:
-            style = ""
-
-        # Split by newline but keep empty parts so we know exactly when to drop down a line
+        style = {'=': C_MOVE, '+': C_ADD, '-': C_DEL}.get(frag.kind, "")
         parts = frag.content.split('\n')
-        
         for i, part in enumerate(parts):
             if i > 0:
-                # We hit a newline in the fragment. Emit what we have.
                 emit_line()
-                # Target file line counter ONLY advances on real target text (=, +)
                 if frag.kind in ('=', '+') and n is not None:
                     n += 1
-            
-            # Append the actual inline text with its specific color
             if part:
                 current_text.append(part, style=style)
-                
-    # Flush whatever is left in the buffer at the end of the block
+                if frag.kind in ('=', '+'):
+                    line_has_target_content = True
+
     if len(current_text) > 0:
         emit_line()
 

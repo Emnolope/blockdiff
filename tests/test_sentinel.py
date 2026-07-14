@@ -71,19 +71,20 @@ def test_build_blobs_maps_every_file():
 
 
 def test_file_owning_is_pure_arithmetic():
-    """_file_owning reads authored positions, it does not search. The file is
-    whichever sentinel offset is the greatest one <= the queried offset. None in
-    -> None out (a '-' has no new address, a '+' has no old)."""
+    """_file_owning reads authored positions, it does not search. It returns
+    (owning_file, that_file's_sentinel_start_offset) so callers can do exact
+    line-number arithmetic without a second scan. None offset in -> (None, None)
+    out (a '-' has no new address, a '+' has no old)."""
     marks = [(0, "a.md"), (100, "b.md"), (250, "c.md")]
-    assert _file_owning(0, marks, "a.md") == "a.md"
-    assert _file_owning(50, marks, "a.md") == "a.md"
-    assert _file_owning(100, marks, "a.md") == "b.md"    # boundary belongs to b
-    assert _file_owning(101, marks, "a.md") == "b.md"
-    assert _file_owning(249, marks, "a.md") == "b.md"
-    assert _file_owning(250, marks, "a.md") == "c.md"
-    assert _file_owning(9999, marks, "a.md") == "c.md"
-    assert _file_owning(None, marks, "a.md") is None     # no address on this side
-    assert _file_owning(5, [], "a.md") is None           # no marks -> no owner
+    assert _file_owning(0, marks, "a.md") == ("a.md", 0)
+    assert _file_owning(50, marks, "a.md") == ("a.md", 0)
+    assert _file_owning(100, marks, "a.md") == ("b.md", 100)    # boundary belongs to b
+    assert _file_owning(101, marks, "a.md") == ("b.md", 100)
+    assert _file_owning(249, marks, "a.md") == ("b.md", 100)
+    assert _file_owning(250, marks, "a.md") == ("c.md", 250)
+    assert _file_owning(9999, marks, "a.md") == ("c.md", 250)
+    assert _file_owning(None, marks, "a.md") == (None, None)     # no address on this side
+    assert _file_owning(5, [], "a.md") == (None, None)           # no marks -> no owner
 
 
 def test_sentinel_survives_the_engine():
@@ -121,12 +122,31 @@ def test_sentinel_survives_the_engine():
 
 
 def test_line_of_reports_minus_one_not_a_lie():
-    """_line_of must return -1 for content that isn't present verbatim, rather
-    than a plausible-but-wrong line number."""
-    content = "line one\nline two\nline three"
-    assert _line_of(content, "line two") == 2
-    assert _line_of(content, "line one") == 1
-    assert _line_of(content, "nonexistent fragment") == -1
+    """_line_of must return -1 for content that has no real address on that
+    side (a '-' has no new_char, a pure-rewrite move has no shared '=' anchor),
+    rather than a plausible-but-wrong line number. Driven through the real
+    pipeline since char offsets can't be faked in isolation anymore."""
+    from blockdiff.match import build_blobs, _line_of
+    from blockdiff.cacycle import BlockDiffEngine
+
+    old = {"doc.md": "line one\nline two\nline three"}
+    new = {"doc.md": "line one\nline TWO\nline three"}
+
+    old_blob, new_blob, first, old_marks, new_marks, prelinks = build_blobs(old, new)
+    blocks = BlockDiffEngine().compute_diff(old_blob, new_blob, prelinks=prelinks)
+
+    # A '+' block has no old_char — _line_of must report -1, not guess.
+    plus_block = next((b for b in blocks if b.type == '+'), None)
+    assert plus_block is not None, "fixture didn't produce a '+' block"
+    assert _line_of(plus_block.old_char, 0, old["doc.md"]) == -1, \
+        "a '+' block has no old_char; _line_of must report -1, not a guessed line"
+
+    # A '=' block with a real address resolves to a real line.
+    eq_block = next((b for b in blocks if b.type == '=' and "line two" not in (b.text or "")
+                      and (b.text or "").strip()), None)
+    assert eq_block is not None
+    line = _line_of(eq_block.old_char, 0, old["doc.md"])
+    assert line >= 1, f"expected a real line number, got {line}"
 
 
 def test_sentinels_are_the_fixed_spine_after_a_big_move():

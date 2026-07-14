@@ -38,10 +38,12 @@ def _collect(repo_path, ref_old, ref_new, files):
             new_files[new_path] = f.read()
     else:
         changed, renamed = get_changed_files(repo_path, ref_old, ref_new)
+        renamed_paths = {r.old_path for r in renamed} | {r.new_path for r in renamed}
         for path in changed:
+            if path in renamed_paths:
+                continue
             oc = get_file_content(repo_path, ref_old, path)
             nc = get_file_content(repo_path, ref_new, path)
-            # Don't drop a side purely for falsy content; keep regions aligned.
             if oc or (not oc and not nc):
                 old_files[path] = oc
             if nc or (not oc and not nc):
