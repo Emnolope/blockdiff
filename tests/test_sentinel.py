@@ -122,11 +122,7 @@ def test_sentinel_survives_the_engine():
 
 
 def test_line_of_reports_minus_one_not_a_lie():
-    """_line_of must return -1 for content that has no real address on that
-    side (a '-' has no new_char, a pure-rewrite move has no shared '=' anchor),
-    rather than a plausible-but-wrong line number. Driven through the real
-    pipeline since char offsets can't be faked in isolation anymore."""
-    from blockdiff.match import build_blobs, _line_of
+    from blockdiff.match import build_blobs, _line_of, _file_owning, _SEP_RE
     from blockdiff.cacycle import BlockDiffEngine
 
     old = {"doc.md": "line one\nline two\nline three"}
@@ -135,17 +131,17 @@ def test_line_of_reports_minus_one_not_a_lie():
     old_blob, new_blob, first, old_marks, new_marks, prelinks = build_blobs(old, new)
     blocks = BlockDiffEngine().compute_diff(old_blob, new_blob, prelinks=prelinks)
 
-    # A '+' block has no old_char — _line_of must report -1, not guess.
     plus_block = next((b for b in blocks if b.type == '+'), None)
     assert plus_block is not None, "fixture didn't produce a '+' block"
     assert _line_of(plus_block.old_char, 0, old["doc.md"]) == -1, \
         "a '+' block has no old_char; _line_of must report -1, not a guessed line"
 
-    # A '=' block with a real address resolves to a real line.
-    eq_block = next((b for b in blocks if b.type == '=' and "line two" not in (b.text or "")
-                      and (b.text or "").strip()), None)
+    # Use "line three" to avoid the \n\n padding block at the start which 
+    # gives rel < 0 and thus -1 line number.
+    eq_block = next((b for b in blocks if b.type == '=' and "line three" in (b.text or "")), None)
     assert eq_block is not None
-    line = _line_of(eq_block.old_char, 0, old["doc.md"])
+    _owner, owner_off = _file_owning(eq_block.old_char, old_marks, first)
+    line = _line_of(eq_block.old_char, owner_off, old["doc.md"])
     assert line >= 1, f"expected a real line number, got {line}"
 
 

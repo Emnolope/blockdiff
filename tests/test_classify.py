@@ -208,8 +208,8 @@ def test_cross_file_move_reported_even_when_engine_marks_it_fixed():
                   if b.type == '=' and "quorum sensing" in (b.text or "")), None)
     assert mover is not None, \
         "premise gone: no single '=' block carries the moved line anymore"
-    src = _file_owning(mover.old_char, old_marks, first)
-    dst = _file_owning(mover.new_char, new_marks, first)
+    src, _src_off = _file_owning(mover.old_char, old_marks, first)
+    dst, _dst_off = _file_owning(mover.new_char, new_marks, first)
     assert src == "a.md" and dst == "b.md", \
         f"premise gone: mover no longer crosses a.md->b.md (src={src} dst={dst})"
     assert mover.fixed is True, (
@@ -245,6 +245,59 @@ def test_short_coincidental_cross_file_token_is_not_a_move():
     removed, added, moved = find_moves(old, new)
     assert not any(word in m.content for m in moved), \
         f"lone coincidental token {word!r} reported as a cross-file move"
+
+def test_trailing_add_absorbed_into_moved_group():
+    """A trailing insertion at the end of a relocated block must be absorbed into
+    the move, even if the DP froze the move as the stationary spine (fixed=True)."""
+    from blockdiff.match import build_blobs
+    from blockdiff.cacycle import BlockDiffEngine
+
+    body = (
+        "def function_that_relocates_entirely():\n"
+        "    result = compute_something_quite_unique_here()\n"
+        "    intermediate = transform_the_result_further_now()\n"
+        "    final = validate_and_return_intermediate(intermediate)\n"
+        "    processed = apply_business_logic_to_final(final)\n"
+    )
+    new_tail = "    assert not any(\"crucial caveat\" in r for r in processed)\n"
+
+    old = {
+        "src.py": f"# source module\n\n{body}",
+        "dst.py": "# destination module\n\nplaceholder only here\n",
+    }
+    new = {
+        "src.py": "# source module\n\n# stub — body relocated\n",
+        "dst.py": f"# destination module\n\nplaceholder only here\n\n{body}{new_tail}",
+    }
+
+    ob, nb, first, om, nm, pl = build_blobs(old, new)
+    engine = BlockDiffEngine(block_min_length=3)
+    blocks = engine.compute_diff(ob, nb, prelinks=pl)
+
+    mover_group = None
+    for gi, g in enumerate(engine.groups):
+        text = "".join(blocks[b].text or "" for b in range(g.block_start, g.block_end + 1))
+        if "compute_something_quite_unique_here" in text:
+            mover_group = g
+            break
+    assert mover_group is not None, "moved body not found in any group"
+
+    group_text = "".join(blocks[b].text or ""
+                         for b in range(mover_group.block_start, mover_group.block_end + 1))
+
+    assert "crucial caveat" in group_text, (
+        f"trailing '+' NOT in the mover's group — orphaned as singleton.\n"
+        f"group text: {group_text[:200]!r}")
+
+    # And it must not ALSO show up anywhere else as an orphaned singleton.
+    for gi2, g2 in enumerate(engine.groups):
+        if g2 is mover_group:
+            continue
+        if g2.block_start == g2.block_end:
+            bt = blocks[g2.block_start].text or ""
+            assert "crucial caveat" not in bt, (
+                f"insertion double-counted as a singleton in g[{gi2}] "
+                f"(fixed={g2.fixed}, color={g2.color_id})")
 
 def test_trailing_del_absorbed_into_moved_group():
     """Equity for '-'. A '-' that lands one past a moved group's block_end

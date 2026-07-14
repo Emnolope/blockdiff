@@ -1250,13 +1250,12 @@ class BlockDiffEngine:
                 if self.blocks[b].group is None:
                     self.blocks[b].group = group_idx
                     self.blocks[b].fixed = fixed
-
         # Pass 1.5 — absorb trailing +/- orphans into the preceding moved group.
         #
-        # A +/- with no group that sits immediately after a moved group (fixed=False)
-        # in block order is an inline edit of the relocated content. It belongs to
-        # that move. Attribution is positional only — never content — so two distinct
-        # moved groups can never alias: each has its own index and we only extend the
+        # A +/- with no group that sits immediately after a moved group in block order
+        # is an inline edit of the relocated content. It belongs to that move. 
+        # Attribution is positional only — never content — so two distinct
+        # groups can never alias: each has its own index and we only extend the
         # immediately preceding one.
         for block_idx, block in enumerate(self.blocks):
             if block.group is not None or block.type not in ('+', '-'):
@@ -1267,10 +1266,25 @@ class BlockDiffEngine:
             if prev_group_idx is None:
                 continue
             prev_group = self.groups[prev_group_idx]
-            if prev_group.fixed is not False:
-                # Only absorb into genuinely moved groups (fixed=False).
-                # fixed=True = stationary/anchor, skip. fixed=None = another orphan, skip.
+            
+            if prev_group.is_anchor:
+                # Do not absorb into anchor groups (the ground frame sentinels).
+                # (A genuinely moved group can be fixed=True if it won the DP, 
+                # so we must check is_anchor, not just fixed).
                 continue
+                
+            # A group is naturally stationary if it did not cross any other blocks.
+            # This is true if and only if all its blocks are in sections of length 1.
+            is_stationary = True
+            for b in range(prev_group.block_start, prev_group.block_end + 1):
+                sec = self.sections[self.blocks[b].section]
+                if sec['blockStart'] != sec['blockEnd']:
+                    is_stationary = False
+                    break
+                    
+            if is_stationary:
+                continue
+                
             block.group = prev_group_idx
             block.fixed = prev_group.fixed
             prev_group.block_end = block_idx
