@@ -50,7 +50,6 @@ def _collect(repo_path, ref_old, ref_new, files):
                 new_files[path] = nc
     return old_files, new_files, renamed
 
-
 def main():
     parser = argparse.ArgumentParser(description="blockdiff - detect cross-file moved blocks.")
     parser.add_argument("--json", action="store_true")
@@ -59,6 +58,8 @@ def main():
                         help="Diff two files directly, no git.")
     parser.add_argument("ref_old", nargs="?", default="HEAD~1")
     parser.add_argument("ref_new", nargs="?", default="HEAD")
+    parser.add_argument("--display-mode", choices=["source", "target", "both"], default="target",
+                        help="How to display moved blocks with inline edits.")
     _add_engine_args(parser)
 
     args = parser.parse_args()
@@ -79,8 +80,7 @@ def main():
     if args.json:
         render_json(removed, added, moved, renamed)
     else:
-        render_diff(removed, added, moved, renamed)
-
+        render_diff(removed, added, moved, renamed, display_mode=args.display_mode)
 
 if __name__ == "__main__":
     main()

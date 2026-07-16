@@ -58,7 +58,6 @@ class MoveFragment:
     kind: str
     content: str
 
-
 @dataclass
 class MovedBlock:
     source_file: str
@@ -67,7 +66,7 @@ class MovedBlock:
     target_line: int
     content: str
     fragments: List[MoveFragment] = field(default_factory=list)
-
+    color_id: Optional[int] = None
 
 @dataclass
 class ResultBlock:
@@ -211,10 +210,16 @@ def classify(blocks: List[EngineBlock],
             first_eq = next(((b, c) for b, c in fragments if b.type == '='), None)
             source_line = _line_of(first_eq[0].old_char, src_off, old_files.get(src, "")) if first_eq else -1
             target_line = _line_of(first_eq[0].new_char, dst_off, new_files.get(dst, "")) if first_eq else -1
+            
+            # Pull color_id off any fragment block in this group. 
+            # If it's a fixed=True move (the DP stationary spine), this gracefully stays None.
+            color_id = next((b.color_id for b, _c in fragments if getattr(b, 'color_id', None) is not None), None)
+
             moved.append(MovedBlock(
                 source_file=src, source_line=source_line,
                 target_file=dst, target_line=target_line,
-                content=joined_content, fragments=move_fragments))
+                content=joined_content, fragments=move_fragments,
+                color_id=color_id))
         else:
             for b, content in fragments:
                 if b.type == '-':

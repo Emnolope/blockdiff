@@ -19,6 +19,24 @@ C_ADD    = "green"
 C_GUTTER = "grey42"      # line-number gutter, dim so content leads
 C_ARROW  = "bright_white"
 
+# Move palette (Light / Dark variant pairs), deliberately avoiding red/green
+MOVE_PALETTE = [
+    ("bright_blue",    "blue"),
+    ("bright_magenta", "magenta"),
+    ("bright_cyan",    "cyan"), 
+    ("orange3",        "dark_orange3"),
+    ("plum2",          "purple4"),
+    ("khaki1",         "gold3"),
+]
+MAX_MOVE_COLORS = len(MOVE_PALETTE)
+
+
+def color_for(color_id):
+    if color_id is None:
+        return (C_MOVE, C_MOVE)  # fallback: old single-yellow behavior
+    idx = (color_id - 1) % MAX_MOVE_COLORS
+    return MOVE_PALETTE[idx]
+
 
 def _payload(removed: List[ResultBlock], added: List[ResultBlock],
              moved: List[MovedBlock], renamed: List[RenamedFile] = None) -> dict:
@@ -35,6 +53,7 @@ def _payload(removed: List[ResultBlock], added: List[ResultBlock],
         "moved": [{"from_file": m.source_file, "from_line": m.source_line,
                    "to_file": m.target_file, "to_line": m.target_line,
                    "content": m.content,
+                   "color_id": getattr(m, 'color_id', None),
                    "fragments": [{"kind": f.kind, "content": f.content} for f in getattr(m, 'fragments', [])]} 
                   for m in moved],
         "summary": {"renamed_count": len(renamed), "removed_count": len(removed),
@@ -42,36 +61,17 @@ def _payload(removed: List[ResultBlock], added: List[ResultBlock],
     }
 
 
-def _section(console: Console, title: str, style: str, count: int):
-    """A titled rule instead of a boxed panel — reads cleaner, wastes no width."""
-    console.print()
-    console.print(Rule(f"[{style} bold]{title}[/]  [dim]({count})[/]",
-                       style=style, align="left"))
-
-
-def _body(console: Console, content: str, style: str, gutter_start: int):
-    """Fallback for raw single-colored blocks without threaded fragments."""
-    lines = content.split("\n")
-    for i, line in enumerate(lines):
-        n = gutter_start + i if gutter_start >= 0 else None
-        gutter = f"{n:>5} " if n is not None else "    · "
-        t = Text()
-        t.append(gutter, style=C_GUTTER)
-        t.append(line, style=style)
-        console.print(t)
-
-
-def _body_fragments(console: Console, fragments: List[MoveFragment], gutter_start: int):
+def _body_fragments(console: Console, fragments: List[MoveFragment], gutter_start: int, tint: str = C_MOVE, side_filter: str = None):
     n = gutter_start if gutter_start >= 0 else None
     current_text = Text()
-    line_has_target_content = False  # True once = or + lands on the current line
+    line_has_target_content = False
 
     def emit_line():
         nonlocal n, current_text, line_has_target_content
         if line_has_target_content:
             gutter = f"{n:>5} " if n is not None else "    · "
         else:
-            gutter = "      "  # this line has no target-file line number
+            gutter = "      "
         out = Text()
         out.append(gutter, style=C_GUTTER)
         out.append(current_text)
@@ -79,17 +79,32 @@ def _body_fragments(console: Console, fragments: List[MoveFragment], gutter_star
         current_text = Text()
         line_has_target_content = False
 
+    base_style = {'=': tint, '+': C_ADD, '-': C_DEL}
+
     for frag in fragments:
-        style = {'=': C_MOVE, '+': C_ADD, '-': C_DEL}.get(frag.kind, "")
+        if side_filter == "dark_side" and frag.kind == '+':
+            continue
+        if side_filter == "light_side" and frag.kind == '-':
+            continue
+            
+        style = base_style.get(frag.kind, "")
         parts = frag.content.split('\n')
+        
         for i, part in enumerate(parts):
             if i > 0:
                 emit_line()
-                if frag.kind in ('=', '+') and n is not None:
-                    n += 1
+                if n is not None:
+                    # In dark (source) side, only advance lines for = and -
+                    if side_filter == "dark_side" and frag.kind in ('=', '-'):
+                        n += 1
+                    # In light (target) side, advance lines for = and +
+                    elif side_filter != "dark_side" and frag.kind in ('=', '+'):
+                        n += 1
             if part:
                 current_text.append(part, style=style)
-                if frag.kind in ('=', '+'):
+                if side_filter == "dark_side" and frag.kind in ('=', '-'):
+                    line_has_target_content = True
+                elif side_filter != "dark_side" and frag.kind in ('=', '+'):
                     line_has_target_content = True
 
     if len(current_text) > 0:
@@ -97,7 +112,8 @@ def _body_fragments(console: Console, fragments: List[MoveFragment], gutter_star
 
 
 def render_diff(removed: List[ResultBlock], added: List[ResultBlock],
-                moved: List[MovedBlock], renamed: List[RenamedFile] = None):
+                moved: List[MovedBlock], renamed: List[RenamedFile] = None,
+                display_mode: str = "target"):
     renamed = renamed or []
     console = Console()
 
@@ -115,18 +131,52 @@ def render_diff(removed: List[ResultBlock], added: List[ResultBlock],
     if moved:
         _section(console, "MOVED BLOCKS", C_MOVE, len(moved))
         for m in moved:
-            head = Text()
-            head.append("  ", style="")
-            head.append(f"{m.source_file}:{m.source_line}", style=f"{C_MOVE}")
-            head.append("  →  ", style=C_ARROW)
-            head.append(f"{m.target_file}:{m.target_line}", style=f"{C_MOVE} bold")
-            console.print(head)
-            
+            light, dark = color_for(m.color_id)
             fragments = getattr(m, 'fragments', [])
-            if fragments:
-                _body_fragments(console, fragments, m.target_line)
-            else:
-                _body(console, m.content, C_MOVE, m.target_line)
+
+            if display_mode == "source":
+                head = Text()
+                head.append("  ", style="")
+                head.append(f"{m.source_file}:{m.source_line}", style=f"{dark} bold")
+                head.append("  →  ", style=C_ARROW)
+                head.append(f"{m.target_file}:{m.target_line}", style=dark)
+                console.print(head)
+                
+                if fragments:
+                    _body_fragments(console, fragments, m.source_line, tint=dark, side_filter="dark_side")
+                else:
+                    _body(console, m.content, dark, m.source_line)
+
+            elif display_mode == "both":
+                head1 = Text()
+                head1.append("  ", style="")
+                head1.append(f"{m.source_file}:{m.source_line}", style=f"{dark} bold")
+                console.print(head1)
+                
+                if fragments:
+                    _body_fragments(console, fragments, m.source_line, tint=dark, side_filter="dark_side")
+                
+                arrow = Text("      moved to ", style=C_ARROW)
+                arrow.append(f"{m.target_file}:{m.target_line}", style=f"{light} bold")
+                console.print(arrow)
+                
+                if fragments:
+                    _body_fragments(console, fragments, m.target_line, tint=light, side_filter="light_side")
+                else:
+                    _body(console, m.content, light, m.target_line)
+
+            else:  # "target" (default)
+                head = Text()
+                head.append("  ", style="")
+                head.append(f"{m.source_file}:{m.source_line}", style=light)
+                head.append("  →  ", style=C_ARROW)
+                head.append(f"{m.target_file}:{m.target_line}", style=f"{light} bold")
+                console.print(head)
+                
+                if fragments:
+                    _body_fragments(console, fragments, m.target_line, tint=light, side_filter="light_side")
+                else:
+                    _body(console, m.content, light, m.target_line)
                 
             console.print()
 
@@ -164,6 +214,25 @@ def render_diff(removed: List[ResultBlock], added: List[ResultBlock],
         summary.append("   ")
         summary.append(f"{len(added)} added", style=C_ADD)
         console.print(summary)
+
+
+def _section(console: Console, title: str, style: str, count: int):
+    """A titled rule instead of a boxed panel — reads cleaner, wastes no width."""
+    console.print()
+    console.print(Rule(f"[{style} bold]{title}[/]  [dim]({count})[/]",
+                       style=style, align="left"))
+
+
+def _body(console: Console, content: str, style: str, gutter_start: int):
+    """Fallback for raw single-colored blocks without threaded fragments."""
+    lines = content.split("\n")
+    for i, line in enumerate(lines):
+        n = gutter_start + i if gutter_start >= 0 else None
+        gutter = f"{n:>5} " if n is not None else "    · "
+        t = Text()
+        t.append(gutter, style=C_GUTTER)
+        t.append(line, style=style)
+        console.print(t)
 
 
 def render_json(removed: List[ResultBlock], added: List[ResultBlock],
