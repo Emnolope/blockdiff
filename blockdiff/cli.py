@@ -33,9 +33,21 @@ def _collect(repo_path, ref_old, ref_new, files):
     if files:
         old_path, new_path = files
         with open(old_path, encoding="utf-8", errors="replace") as f:
-            old_files[old_path] = f.read()
+            old_content = f.read()
         with open(new_path, encoding="utf-8", errors="replace") as f:
-            new_files[new_path] = f.read()
+            new_content = f.read()
+        # --files diffs two versions of ONE logical file. Use the OLD path as
+        # the canonical key on both sides so build_blobs sees a single shared
+        # slot. Using distinct keys here silently violates build_blobs'
+        # "every path appears in both dicts under the same key" assumption:
+        # it would drop new content into a phantom slot labeled NEW, and
+        # attribute OLD-side diffs to OLD and NEW-side diffs to NEW, producing
+        # bogus cross-file "moves" of stationary text. For genuine rename
+        # detection, use git mode: a commit that renames A->B surfaces as a
+        # RenamedFile there.
+        key = old_path
+        old_files[key] = old_content
+        new_files[key] = new_content
     else:
         changed, renamed = get_changed_files(repo_path, ref_old, ref_new)
         renamed_paths = {r.old_path for r in renamed} | {r.new_path for r in renamed}
