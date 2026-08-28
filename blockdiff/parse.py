@@ -110,3 +110,9 @@ def get_file_content(repo_path: str, ref: str, path: str) -> str:
     if result.returncode != 0:
         return ""
     return result.stdout
+
+
+def get_tree_files(repo_path: str, ref: str) -> Dict[str, str]:
+    """Return {path: decoded_content} for every blob in the given tree ref."""
+    paths = list(_ls_tree(repo_path, ref).keys())
+    return {path: get_file_content(repo_path, ref, path) for path in paths}

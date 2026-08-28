@@ -1250,6 +1250,14 @@ class BlockDiffEngine:
                 if self.blocks[b].group is None:
                     self.blocks[b].group = group_idx
                     self.blocks[b].fixed = fixed
+                    # Synthetic +/- blocks from _get_ins_blocks/_get_del_blocks may
+                    # not have a section assigned yet. Borrow one from the group so
+                    # that downstream section lookups in Pass 1.5 remain valid.
+                    if self.blocks[b].section is None:
+                        for bb in range(group.block_start, group.block_end + 1):
+                            if self.blocks[bb].section is not None:
+                                self.blocks[b].section = self.blocks[bb].section
+                                break
         # Pass 1.5 — absorb trailing +/- orphans into the preceding moved group.
         #
         # A +/- with no group that sits immediately after a moved group in block order
@@ -1287,6 +1295,12 @@ class BlockDiffEngine:
                 
             block.group = prev_group_idx
             block.fixed = prev_group.fixed
+            # Synthetic +/- orphans may also arrive here without a section.
+            if block.section is None:
+                for b2 in range(prev_group.block_start, prev_group.block_end + 1):
+                    if self.blocks[b2].section is not None:
+                        block.section = self.blocks[b2].section
+                        break
             prev_group.block_end = block_idx
 
         # Pass 2: any still-ungrouped blocks become new singleton groups.

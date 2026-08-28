@@ -1,14 +1,16 @@
+import argparse
+import os
+from .parse import get_changed_files, get_file_content, get_tree_files
+from .hashdiff import prefilter_files, read_directory
+from .match import find_moves
+from .output import render_diff, render_json
+from .cacycle import BlockDiffEngine
+
+
 # cli.py — human-facing entry point. Clanker-human parity: every engine knob the
 # MCP server exposes is surfaced here as a flag, generated from the SAME
 # BlockDiffEngine.TUNABLE_PARAMS table. One source of truth.
 #
-
-
-import argparse
-from .parse import get_changed_files, get_file_content
-from .match import find_moves
-from .output import render_diff, render_json
-from .cacycle import BlockDiffEngine
 
 
 def _add_engine_args(parser):
@@ -28,39 +30,63 @@ def _engine_config(args):
     return {name: getattr(args, name) for name, _t, _d, _h in BlockDiffEngine.TUNABLE_PARAMS}
 
 
-def _collect(repo_path, ref_old, ref_new, files):
-    old_files, new_files, renamed = {}, {}, []
-    if files:
-        old_path, new_path = files
-        with open(old_path, encoding="utf-8", errors="replace") as f:
-            old_content = f.read()
-        with open(new_path, encoding="utf-8", errors="replace") as f:
-            new_content = f.read()
-        # --files diffs two versions of ONE logical file. Use the OLD path as
-        # the canonical key on both sides so build_blobs sees a single shared
-        # slot. Using distinct keys here silently violates build_blobs'
-        # "every path appears in both dicts under the same key" assumption:
-        # it would drop new content into a phantom slot labeled NEW, and
-        # attribute OLD-side diffs to OLD and NEW-side diffs to NEW, producing
-        # bogus cross-file "moves" of stationary text. For genuine rename
-        # detection, use git mode: a commit that renames A->B surfaces as a
-        # RenamedFile there.
-        key = old_path
-        old_files[key] = old_content
-        new_files[key] = new_content
-    else:
-        changed, renamed = get_changed_files(repo_path, ref_old, ref_new)
-        renamed_paths = {r.old_path for r in renamed} | {r.new_path for r in renamed}
-        for path in changed:
-            if path in renamed_paths:
-                continue
-            oc = get_file_content(repo_path, ref_old, path)
-            nc = get_file_content(repo_path, ref_new, path)
-            if oc or (not oc and not nc):
-                old_files[path] = oc
-            if nc or (not oc and not nc):
-                new_files[path] = nc
+def _collect_files(old_path, new_path):
+    with open(old_path, encoding="utf-8", errors="replace") as f:
+        old_content = f.read()
+    with open(new_path, encoding="utf-8", errors="replace") as f:
+        new_content = f.read()
+    # --files diffs two versions of ONE logical file. Use the OLD path as
+    # the canonical key on both sides so build_blobs sees a single shared
+    # slot. Using distinct keys here silently violates build_blobs'
+    # "every path appears in both dicts under the same key" assumption:
+    # it would drop new content into a phantom slot labeled NEW, and
+    # attribute OLD-side diffs to OLD and NEW-side diffs to NEW, producing
+    # bogus cross-file "moves" of stationary text. For genuine rename
+    # detection, use git mode: a commit that renames A->B surfaces as a
+    # RenamedFile there.
+    key = old_path
+    return {key: old_content}, {key: new_content}, []
+
+
+def _collect_git(repo_path, ref_old, ref_new):
+    changed, renamed = get_changed_files(repo_path, ref_old, ref_new)
+    renamed_paths = {r.old_path for r in renamed} | {r.new_path for r in renamed}
+    old_files, new_files = {}, {}
+    for path in changed:
+        if path in renamed_paths:
+            continue
+        oc = get_file_content(repo_path, ref_old, path)
+        nc = get_file_content(repo_path, ref_new, path)
+        if oc or (not oc and not nc):
+            old_files[path] = oc
+        if nc or (not oc and not nc):
+            new_files[path] = nc
     return old_files, new_files, renamed
+
+
+def _collect_folders(old_folder, new_folder):
+    old_files = read_directory(old_folder)
+    new_files = read_directory(new_folder)
+    return old_files, new_files, []
+
+
+def _collect_folder_vs_git(repo_path, folder, ref):
+    """Compare a filesystem folder to a Git tree/ref.
+
+    Hashes line up because read_directory uses git_blob_hash, which is the
+    same SHA-1("blob <size>\\0<bytes>") format Git stores.
+    """
+    folder_files = read_directory(folder)
+    git_files = get_tree_files(repo_path, ref)
+    return folder_files, git_files, []
+
+
+def _run_prefilter(old_files, new_files, renamed_git):
+    old_diff, new_diff, renamed_prefilter, removed, added = prefilter_files(
+        old_files, new_files)
+    # Combine with any already-known pure renames from git mode.
+    return old_diff, new_diff, renamed_git + renamed_prefilter, removed, added
+
 
 def main():
     parser = argparse.ArgumentParser(description="blockdiff - detect cross-file moved blocks.")
@@ -68,6 +94,11 @@ def main():
     parser.add_argument("--repo-path", default=".")
     parser.add_argument("--files", nargs=2, metavar=("OLD", "NEW"),
                         help="Diff two files directly, no git.")
+    parser.add_argument("--folders", nargs=2, metavar=("OLD", "NEW"),
+                        help="Diff two folders directly, no git.")
+    parser.add_argument("--folder-vs-git", nargs=2, metavar=("FOLDER", "REF"),
+                        dest="folder_vs_git",
+                        help="Diff a folder against a Git ref (uses Git's blob hash).")
     parser.add_argument("ref_old", nargs="?", default="HEAD~1")
     parser.add_argument("ref_new", nargs="?", default="HEAD")
     parser.add_argument("--display-mode", choices=["source", "target", "both"], default="target",
@@ -76,8 +107,22 @@ def main():
 
     args = parser.parse_args()
 
-    old_files, new_files, renamed = _collect(
-        args.repo_path, args.ref_old, args.ref_new, args.files)
+    # Decide collection mode.
+    if args.files:
+        old_files, new_files, renamed = _collect_files(*args.files)
+    elif args.folders:
+        old_files, new_files, renamed = _collect_folders(*args.folders)
+    elif args.folder_vs_git:
+        folder, ref = args.folder_vs_git
+        old_files, new_files, renamed = _collect_folder_vs_git(
+            args.repo_path, folder, ref)
+        # Normalize ordering: folder is "old", git ref is "new".
+    else:
+        old_files, new_files, renamed = _collect_git(
+            args.repo_path, args.ref_old, args.ref_new)
+
+    old_files, new_files, renamed, removed_paths, added_paths = _run_prefilter(
+        old_files, new_files, renamed)
 
     if not old_files and not new_files and not renamed:
         if args.json:
