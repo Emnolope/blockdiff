@@ -1,3 +1,29 @@
+# =============================================================================
+# blockdiff/parse.py — THE DRIVE TRAIN (Raw Git State Tracking)
+# =============================================================================
+# SUBSYSTEM ROLE
+#   Raw Git object-store inspection. Extracts {path: blob_hash} tree state and
+#   raw file contents. Git is used ONLY as a tree-state inventory; Git never
+#   diffs content in this codebase.
+#
+# INVOLABLE DATA CONTRACTS & INVARIANTS
+#   - Calls `git ls-tree -r` (_ls_tree) and `git show` (get_file_content)
+#     directly against the repo.
+#   - Resolves changed paths and pure renames by comparing RAW TREE BLOB
+#     HASHES between refs -- no file-pairing, no heuristic similarity.
+#   - A pure rename is proven by hash equality: the same blob hash under a
+#     different path, reported as RenamedFile(..., similarity=100). Always
+#     identity, never a guess.
+#
+# TOMBSTONES (DO NOT TOUCH)
+#   - Strict ban on invoking `git diff` and on Git rename options
+#     (-M, -M100%). Git tracks files; Git does NOT diff content.
+#   - Never let "--color-moved" or rename detection leak back in.
+#
+# COUPLING BOUNDARIES
+#   Imports: stdlib only (dataclasses, typing, subprocess). Never import
+#   .cacycle, .match, .output, or .hashdiff here.
+# =============================================================================
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 import subprocess

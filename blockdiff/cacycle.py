@@ -1,3 +1,41 @@
+# =============================================================================
+# blockdiff/cacycle.py — THE V8 ENGINE CORE (The Engine)
+# =============================================================================
+# SUBSYSTEM ROLE
+#   Sole owner of ALL algorithmic diffing, move detection, Heckel unique-token
+#   anchoring, cascading split refinement, and keystroke-energy optimization.
+#   Pure typed Python transpilation of Cacycle's wikEd diff engine with all
+#   DOM/CSS/HTML presentation gutted. Downstream files (match.py, output.py)
+#   are deliberately DUMB; if a decision needs brains, it belongs here.
+#
+# INVOLABLE DATA CONTRACTS & INVARIANTS
+#   - Operates on CONCATENATED text blobs (old_blob vs new_blob). DiffText
+#     stamps every token with `number` (token order) AND `char_offset`
+#     (deterministic integer character offset). Offsets, not content, are
+#     identity.
+#   - Returns a list of structured DiffBlock records; zero presentation code.
+#   - Stationary prelinks (`kind="stationary"`) force sentinel spans into
+#     singleton anchor groups: break runs in _get_same_blocks, become
+#     singleton ground-frame groups, unconditionally fixed=True, exempt from
+#     the movement DP and from unlinking. Street poles cannot drift.
+#   - The stationary spine DP (_find_max_path) enforces strict monotonicity on
+#     BOTH old_number AND new_number -- a chain increasing in one order only is
+#     NOT a stationary frame and must never be crowned.
+#   - Grouping runs Pass 1 (intra-group filling), Pass 1.5 (trailing orphan
+#     absorption, anchors/stationary excluded), Pass 2 (singleton allocation).
+#   - Origin markers (`|`) record marker_old_char and color_id.
+#
+# TOMBSTONES (DO NOT TOUCH)
+#   - Never add content-string heuristics or similarity scoring here.
+#   - Never remove the dual-order monotonicity guard in _find_max_path.
+#   - Never unlink anchor blocks (poles are noise-proof by law).
+#   - Never judge moves in attribution -- that duty stays in match.py, which
+#     must stay arithmetic-only.
+#
+# COUPLING BOUNDARIES
+#   Imports: stdlib only (re, math, collections, dataclasses, typing). Never
+#   import .match or .output (would create a cycle and leak attribution).
+# =============================================================================
 """
 BlockDiff Engine Core 
 =====================

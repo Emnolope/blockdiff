@@ -1,3 +1,30 @@
+# =============================================================================
+# blockdiff/cli.py — THE STEERING WHEEL (Human CLI Entry Point)
+# =============================================================================
+# SUBSYSTEM ROLE
+#   Human-facing command-line interface. Picks a file-collection mode, runs
+#   the prefilter, invokes the match/attribution pipeline, and delegates
+#   rendering entirely to output.py.
+#
+# INVOLABLE DATA CONTRACTS & INVARIANTS
+#   - CLANKER-HUMAN PARITY: engine flags are generated dynamically from
+#     BlockDiffEngine.TUNABLE_PARAMS (_add_engine_args). The human CLI and the
+#     FastMCP server must never drift apart -- same table, one source of truth.
+#   - Supports Git refs (default HEAD~1..HEAD), --files, --folders, and
+#     --folder-vs-git.
+#   - In --files mode the canonical key equivalence (key = old_path) is FORCED
+#     across both file dicts so build_blobs sees one shared slot. Mismatched
+#     keys would manufacture phantom cross-file moves of stationary text.
+#
+# TOMBSTONES (DO NOT TOUCH)
+#   - Never hardcode CLI engine flags independently of TUNABLE_PARAMS.
+#   - Never pass mismatched keys in --files mode.
+#   - Never re-implement engine or attribution logic inside this file.
+#
+# COUPLING BOUNDARIES
+#   Imports: .parse, .hashdiff, .match, .output, .cacycle (one direction,
+#   downstream). Exposes `main` as the `blockdiff` console script entry point.
+# =============================================================================
 import argparse
 import os
 from .parse import get_changed_files, get_file_content, get_tree_files

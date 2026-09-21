@@ -1,3 +1,43 @@
+# =============================================================================
+# blockdiff/match.py — THE CHASSIS (Intentionally Dumb Arithmetic)
+# =============================================================================
+# SUBSYSTEM ROLE
+#   Post-hoc attribution ONLY. Pure coordinate translation and file-boundary
+#   attribution. The engine (cacycle.py) owns every heuristic and already
+#   stamped every verdict (`type` + `fixed`). This file's single job: answer
+#   the arithmetic question "which file does this character offset fall in?"
+#   and slap that label onto the engine's verdict. NOT classification, NOT
+#   judgment, NOT move-vs-not.
+#
+# INVOLABLE DATA CONTRACTS & INVARIANTS
+#   - ZERO heuristic logic: no content-string comparison, no similarity
+#     scoring, no size or word-count gating.
+#   - Concatenates blobs sorted by path, separated by runtime UUID4 sentinels
+#     wrapped in Private-Use-Area fences (\ue000\ue001\ue002<32-hex>\ue003\ue004\ue005).
+#   - File ownership is a deterministic linear/binary scan over AUTHORED
+#     integer character offsets (old_char / new_char), never content lookup.
+#   - Line numbers are exact arithmetic:
+#         rel = char_offset - file_start_offset - _SENTINEL_LEN - 2
+#     then a single-pass newline count. String searching file content to find
+#     a line number is strictly forbidden.
+#   - Sanitization (_clean) strips EXACTLY the injected sentinels; bare
+#     .strip('\n') is forbidden (it would eat genuine user blank lines).
+#   - A group qualifies as a MOVE only if it actually relocates/inserts:
+#     src != dst OR it carries inline additions (+) -- and those are decided
+#     by the engine's verdict shape, not re-litigated here.
+#
+# TOMBSTONES (DO NOT TOUCH)
+#   - Never decide "moved" using `if src != dst:` alone.
+#   - Never add string similarity scoring.
+#   - Never gate by size or word count (that lives in the engine's
+#     block_min_length + _unlink_blocks).
+#   - Never search file_text strings to compute line numbers.
+#   - Never use bare .strip('\n').
+#
+# COUPLING BOUNDARIES
+#   Imports from .cacycle (engine types). Never import .output or .cli.
+#   cacycle must never import this module.
+# =============================================================================
 # blockdiff/match.py
 # match.py — ATTRIBUTION ONLY. This file is STUPID ON PURPOSE.
 #

@@ -1,3 +1,33 @@
+# =============================================================================
+# blockdiff/output.py — THE DASHBOARD (Presentation & Machine Packaging)
+# =============================================================================
+# SUBSYSTEM ROLE
+#   Terminal UI visualization and structured JSON export. A read-only,
+#   non-mutating observer of engine/attribution results.
+#
+# INVOLABLE DATA CONTRACTS & INVARIANTS
+#   - Read-only observer: rendering NEVER mutates diff block structures.
+#   - 6-pair light/dark MOVE_PALETTE (bright_blue/blue, bright_magenta/
+#     magenta, bright_cyan/cyan, orange3/dark_orange3, plum2/purple4,
+#     khaki1/gold3). Color identity comes off the engine's color_id; red and
+#     green tints are reserved for genuine +/- edits.
+#   - 5-character dim grey42 line-number gutter (`f"{n:>5} "`), 6-space
+#     suppression on filtered-only lines, middle-dot indicator ("    · ") for
+#     missing (-1) addresses.
+#   - Perspective modes: target (light_side), source (dark_side), both.
+#   - _payload() is the SINGLE serialization source for both the CLI --json
+#     output and the FastMCP server. Cosmetics never touch the data.
+#
+# TOMBSTONES (DO NOT TOUCH)
+#   - Total prohibition of red/green as moved-block tints.
+#   - Never mutate diff block structures during rendering.
+#   - Never recalculate block offsets or search strings during rendering.
+#   - Never add size/similarity heuristics here -- see Tombstone 2.
+#
+# COUPLING BOUNDARIES
+#   Imports from .parse (RenamedFile) and .match (MovedBlock, ResultBlock,
+#   MoveFragment). Never import .cacycle or .cli.
+# =============================================================================
 # blockdiff/output.py
 import json
 from typing import List

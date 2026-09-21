@@ -1,3 +1,31 @@
+# =============================================================================
+# blockdiff/hashdiff.py — THE FUEL FILTER (Hashing & Pre-Diff Filtering)
+# =============================================================================
+# SUBSYSTEM ROLE
+#   Pre-engine hash prefiltering and directory traversal. Strips byte-identical
+#   noise and proves pure renames BEFORE any content reaches the engine, so the
+#   engine never drowns in identical content.
+#
+# INVOLABLE DATA CONTRACTS & INVARIANTS
+#   - Exact Git-compatible SHA-1 blob hashing via git_blob_hash:
+#         SHA-1("blob <size>\0<bytes>")
+#     The SAME format Git itself stores, so folder-mode hashes are directly
+#     comparable to `git ls-tree` output.
+#   - Drops byte-identical files (same path, same hash).
+#   - Reconstructs pure renames across paths on 100% hash equality only.
+#   - read_directory walks directories with forward-slash separators on any
+#     host OS and sniffs binary files by null-byte presence.
+#
+# TOMBSTONES (DO NOT TOUCH)
+#   - Never introduce similarity heuristics or fuzzy rename detection. No
+#     Git -M emulation, ever. Renames are byte identity or nothing.
+#   - Never pass un-prefiltered identical files into cacycle.py -- the engine
+#     must see only real deltas.
+#
+# COUPLING BOUNDARIES
+#   Imports from .parse (RenamedFile) only. Never import .cacycle, .match, or
+#   .output here; this layer is upstream of the engine.
+# =============================================================================
 """
 hashdiff.py — Git-compatible hash prefilter.
 

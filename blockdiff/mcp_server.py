@@ -1,3 +1,29 @@
+# =============================================================================
+# blockdiff/mcp_server.py — THE MACHINE INTERFACE (FastMCP Agent Endpoint)
+# =============================================================================
+# SUBSYSTEM ROLE
+#   Autonomous-agent endpoint. Exposes the engine to AI agents via FastMCP so
+#   they can verify, BEFORE committing, that no knowledge was destroyed.
+#
+# INVOLABLE DATA CONTRACTS & INVARIANTS
+#   - Exposes the `blockdiff` tool whose schema derives defaults dynamically
+#     from _ENGINE_DEFAULTS, which is built from
+#     BlockDiffEngine.TUNABLE_PARAMS -- the same table the human CLI uses
+#     (clanker-human parity, one source of truth).
+#   - Returns JSON matching the _payload() schema (via .output._payload), so
+#     human and machine outputs are structurally identical.
+#   - Supports parameter overrides through `engine_overrides`; unknown keys are
+#     silently ignored, known keys replace the engine defaults.
+#
+# TOMBSTONES (DO NOT TOUCH)
+#   - Never hardcode engine parameter defaults independently of TUNABLE_PARAMS.
+#   - Never alter JSON payload field names without coordinating the agent
+#     contract (summary.removed_count, moved[].fragments, etc.).
+#
+# COUPLING BOUNDARIES
+#   Imports: mcp (optional dep, blockdiff[mcp]), .parse, .match, .output,
+#   .cacycle. Exposes `run` as the `blockdiff-mcp` console script entry point.
+# =============================================================================
 # mcp_server.py — machine-facing entry point.
 #
 #
