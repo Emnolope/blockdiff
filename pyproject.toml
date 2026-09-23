@@ -17,12 +17,8 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "rich"
-]
-
-[project.optional-dependencies]
-mcp = [
-    "mcp[cli]"
+    "rich",
+    "mcp"
 ]
 
 [project.scripts]
